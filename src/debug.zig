@@ -52,3 +52,74 @@ pub fn disassembleChunk(writer: anytype, chunk: *const Chunk, name: []const u8) 
         offset = try disassembleInstruction(writer, chunk, offset);
     }
 }
+
+fn expect_line(buffer: []const u8, expected: []const u8) usize {
+    const expect = std.testing.expect;
+    const eql = std.mem.eql;
+
+    const search_result = std.mem.indexOf(u8, buffer, "\n");
+    expect(search_result != null);
+    const line_end = search_result.?;
+    
+    expect(eql(u8, buffer[0..line_end], expected));
+
+    return line_end + 1;
+}
+
+test "disassembleChunk op_return" {
+    var chunk = Chunk.init(std.testing.allocator);
+    defer chunk.deinit();
+
+    try chunk.writeOp(OpCode.op_return, 0);
+    
+    var buffer: [64]u8 = undefined; 
+    var writer = std.io.fixedBufferStream(&buffer).writer();
+    try disassembleChunk(writer, &chunk, "test chunk");
+    
+    var line_start: usize = 0;
+    line_start += expect_line(buffer[line_start..], "== test chunk ==");
+    line_start += expect_line(buffer[line_start..], "0000    0  OP_RETURN       ");
+}
+
+test "disassembleChunk op_constant" {
+    var chunk = Chunk.init(std.testing.allocator);
+    defer chunk.deinit();
+
+    const index = try chunk.addConstant(1.2);
+    try chunk.writeOp(OpCode.op_constant, 0);
+    try chunk.write(index, 0);
+    
+    var buffer: [64]u8 = undefined; 
+    var writer = std.io.fixedBufferStream(&buffer).writer();
+    try disassembleChunk(writer, &chunk, "test chunk");
+    
+    var line_start: usize = 0;
+    line_start += expect_line(buffer[line_start..], "== test chunk ==");
+    line_start += expect_line(buffer[line_start..], "0000    0  OP_CONSTANT      00 '1.2'");
+
+}
+
+test "disassembleChunk line numbers" {
+    var chunk = Chunk.init(std.testing.allocator);
+    defer chunk.deinit();
+
+    try chunk.writeOp(OpCode.op_return, 0);
+    try chunk.writeOp(OpCode.op_return, 0);
+    try chunk.writeOp(OpCode.op_return, 0);
+    try chunk.writeOp(OpCode.op_return, 1);
+    try chunk.writeOp(OpCode.op_return, 1);
+    try chunk.writeOp(OpCode.op_return, 2);
+    
+    var buffer: [256]u8 = undefined; 
+    var writer = std.io.fixedBufferStream(&buffer).writer();
+    try disassembleChunk(writer, &chunk, "test chunk");
+    
+    var line_start: usize = 0;
+    line_start += expect_line(buffer[line_start..], "== test chunk ==");
+    line_start += expect_line(buffer[line_start..], "0000    0  OP_RETURN       ");
+    line_start += expect_line(buffer[line_start..], "0001    |  OP_RETURN       ");
+    line_start += expect_line(buffer[line_start..], "0002    |  OP_RETURN       ");
+    line_start += expect_line(buffer[line_start..], "0003    1  OP_RETURN       ");
+    line_start += expect_line(buffer[line_start..], "0004    |  OP_RETURN       ");
+    line_start += expect_line(buffer[line_start..], "0005    2  OP_RETURN       ");
+}
