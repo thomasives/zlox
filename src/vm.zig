@@ -4,20 +4,20 @@ const OpCode = @import("chunk.zig").OpCode;
 const Chunk = @import("chunk.zig").Chunk;
 const value = @import("value.zig");
 const Value = value.Value;
-const FixedCapacityStack = @import("stack.zig").FixedCapacityStack;
+const stack = @import("stack.zig");
 
 const debug = @import("debug.zig");
 
 pub const Vm = struct {
     const Self = @This();
     
-    pub const Stack = FixedCapacityStack(Value, 256);
+    pub const Stack = stack.Stack(Value, 256);
 
     // The currently executing chunk
     chunk: *Chunk,  
     // Instruction pointer into the currently executing chunk
     ip: usize,
-    stack: Stack,
+    value_stack: Stack,
 
     pub const InterpretError = error {
         Runtime,
@@ -28,15 +28,15 @@ pub const Vm = struct {
         return Self {
             .chunk = undefined,
             .ip = undefined,
-            .stack = .{}
+            .value_stack = .{}
         };
     }
     
     pub fn deinit(self: *Self) void { }
     
     pub fn interpret(self: *Self, writer: anytype, chunk: *Chunk) !void {
-        std.debug.assert(self.stack.top == 0);
-        defer std.debug.assert(self.stack.top == 0);
+        std.debug.assert(self.value_stack.top == 0);
+        defer std.debug.assert(self.value_stack.top == 0);
 
         self.chunk = chunk;
         self.ip = 0;
@@ -55,17 +55,17 @@ pub const Vm = struct {
     }
     
     fn binary_op(self: *Self, comptime op: fn (Value, Value) Value) void {
-        const b = self.stack.pop();
-        const a = self.stack.pop();
+        const b = self.value_stack.pop();
+        const a = self.value_stack.pop();
 
-        self.stack.push(op(a, b));
+        self.value_stack.push(op(a, b));
     }
     
     fn run(self: *Self, writer: anytype) !void {
         while (true) {
             var next_ip: usize = undefined;
             if (debug.trace_execution) {
-                const stack_values = self.stack.buffer[0..self.stack.top];
+                const stack_values = self.value_stack.buffer[0..self.value_stack.top];
                 try debug.dumpValueStack(writer, stack_values);
                 next_ip = try debug.disassembleInstruction(writer, self.chunk, self.ip);
             }
@@ -73,17 +73,17 @@ pub const Vm = struct {
             const instruction = @intToEnum(OpCode, self.readByte());
             switch (instruction) {
                 .op_return => return,
-                .op_pop => _ = self.stack.pop(),
+                .op_pop => _ = self.value_stack.pop(),
                 .op_print => {
-                    const v = self.stack.buffer[self.stack.top - 1];
+                    const v = self.value_stack.buffer[self.value_stack.top - 1];
                     try value.printValue(writer, v);
                     _ = try writer.write("\n");
                 },
                 .op_constant => {
                     const v = self.readConstant();
-                    self.stack.push(v);
+                    self.value_stack.push(v);
                 },
-                .op_negate => self.stack.push(-self.stack.pop()),
+                .op_negate => self.value_stack.push(-self.value_stack.pop()),
                 .op_add => self.binary_op(add),
                 .op_subtract => self.binary_op(subtract),
                 .op_multiply => self.binary_op(multiply),

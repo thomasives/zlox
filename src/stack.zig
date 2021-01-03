@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn FixedCapacityStack(comptime T: type, comptime capacity: usize) type {
+pub fn Stack(comptime T: type, comptime capacity: usize) type {
     return struct {
         const Self = @This();
 
@@ -30,7 +30,7 @@ pub fn FixedCapacityStack(comptime T: type, comptime capacity: usize) type {
 test "stack push" {
     const expect = std.testing.expect;
 
-    var stack: FixedCapacityStack(u8, 16) = .{};
+    var stack: Stack(u8, 16) = .{};
     expect(stack.top == 0);
 
     stack.push(5);
@@ -43,7 +43,7 @@ test "stack push" {
 test "stack pop" {
     const expect = std.testing.expect;
 
-    var stack: FixedCapacityStack(u8, 16) = .{};
+    var stack: Stack(u8, 16) = .{};
 
     stack.push(5);
     stack.push(6);
