@@ -2,7 +2,10 @@ const std = @import("std");
 
 const OpCode = @import("chunk.zig").OpCode;
 const Chunk = @import("chunk.zig").Chunk;
+const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
+
+pub const trace_execution = true;
 
 // XXX(tri): @Investigate Is there a better way of passing the writer object
 // rather than using anytype?  
@@ -23,12 +26,19 @@ fn constantInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name
     return offset + 2;
 }
 
-fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usize) !usize {
+pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usize) !usize {
     const op: OpCode = @intToEnum(OpCode, chunk.code.items[offset]);
 
     switch (op) {
-        OpCode.op_return => return try simpleInstruction(writer, offset, "OP_RETURN"),
-        OpCode.op_constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
+        .op_return => return try simpleInstruction(writer, offset, "OP_RETURN"),
+        .op_pop => return try simpleInstruction(writer, offset, "OP_POP"),
+        .op_constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
+        .op_print => return try simpleInstruction(writer, offset, "OP_PRINT"),
+        .op_negate => return try simpleInstruction(writer, offset, "OP_NEGATE"),
+        .op_add => return try simpleInstruction(writer, offset, "OP_ADD"),
+        .op_subtract => return try simpleInstruction(writer, offset, "OP_SUBTRACT"),
+        .op_multiply => return try simpleInstruction(writer, offset, "OP_MULTIPLY"),
+        .op_divide => return try simpleInstruction(writer, offset, "OP_DIVIDE"),
     }
 }
 
@@ -52,6 +62,17 @@ pub fn disassembleChunk(writer: anytype, chunk: *const Chunk, name: []const u8) 
         offset = try disassembleInstruction(writer, chunk, offset);
     }
 }
+
+pub fn dumpValueStack(writer: anytype, stack: []value.Value) !void {
+    _ = try writer.write("    ");
+    for (stack) |v| {
+        _ = try writer.write("[ ");
+        try value.printValue(writer, v);
+        _ = try writer.write(" ]");
+    }
+    _ = try writer.write("\n");
+}
+
 
 fn expect_line(buffer: []const u8, expected: []const u8) usize {
     const expect = std.testing.expect;

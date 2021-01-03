@@ -6,7 +6,14 @@ const Value = @import("value.zig").Value;
 /// bytecode interpreter.
 pub const OpCode = enum(u8) {
     op_constant,
+    op_pop,
+    op_print,
     op_return,
+    op_negate,
+    op_add,
+    op_subtract,
+    op_multiply,
+    op_divide,
 };
 
 /// A Chunk of bytecode.  This is the result of compiling a single
