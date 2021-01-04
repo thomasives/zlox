@@ -1,48 +1,72 @@
 const std = @import("std");
-const debug = @import("debug.zig");
+const process = std.process;
 
+const debug = @import("debug.zig");
+const vm = @import("vm.zig");
+
+const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
-const Vm = @import("vm.zig").Vm;
 
 pub fn main() anyerror!void {
-    const allocator = std.testing.allocator;
+    const gpa = std.testing.allocator;
 
-    var vm = Vm.init();
+    try vm.init(gpa);
     defer vm.deinit();
 
-    var chunk = Chunk.init(allocator);
-    defer chunk.deinit();
-
-    {
-        const index = try chunk.addConstant(5.0);
-        try chunk.writeOp(OpCode.op_constant, 123);
-        try chunk.write(index, 123);
-    }
+    var arg_it = process.args();
     
-    {
-        const index = try chunk.addConstant(8.0);
-        try chunk.writeOp(OpCode.op_constant, 123);
-        try chunk.write(index, 123);
+    const exe_name = try arg_it.next(gpa).?;
+    defer gpa.free(exe_name);
+
+    const path_arg = arg_it.next(gpa);
+    if (path_arg == null) {
+        try repl(gpa);
+    } else {
+        const path = try path_arg.?;
+        defer gpa.free(path);
+
+        if (arg_it.skip()) {
+            std.debug.warn("Usage:\n    {} [path]\n", .{exe_name});
+            return error.InvalidArgs;
+        }
+
+        try runFile(gpa, path);
     }
+}
 
-    {
-        const index = try chunk.addConstant(2.0);
-        try chunk.writeOp(OpCode.op_constant, 123);
-        try chunk.write(index, 123);
-    }
-
-    try chunk.writeOp(OpCode.op_negate, 123);
-    try chunk.writeOp(OpCode.op_add, 123);
-    try chunk.writeOp(OpCode.op_multiply, 123);
-
-    try chunk.writeOp(OpCode.op_print, 123);
-    try chunk.writeOp(OpCode.op_pop, 123);
-    try chunk.writeOp(OpCode.op_return, 123);
+fn repl(gpa: *Allocator) !void {
+    var line_buffer = ArrayList(u8).init(gpa);
+    defer line_buffer.deinit();
     
+    const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
-    try debug.disassembleChunk(&stdout, &chunk, "test chunk");
-    _ = try stdout.write("\n");
 
-    try vm.interpret(stdout, &chunk);
+    while (true) {
+        _ = try stdout.write("> ");
+
+        stdin.readUntilDelimiterArrayList(&line_buffer, '\n', 16 * 1024) catch |e| {
+            _ = try stdout.write("\n");
+            return e;
+        };
+        
+        try vm.interpret(line_buffer.items);
+    }
+}
+
+fn runFile(gpa: *Allocator, file_path: []const u8) !void {
+    var source_code = try readFile(gpa, file_path);
+    defer gpa.free(source_code);
+
+    try vm.interpret(source_code);
+}
+
+fn readFile(gpa: *Allocator, file_path: []const u8) ![]const u8 {
+    var file = try std.fs.cwd().openFile(file_path, .{});
+    defer file.close();
+    var reader = file.reader();
+    
+    var source_code = try reader.readAllAlloc(gpa, 1024 * 1024 * 1024);
+    return source_code;
 }
