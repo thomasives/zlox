@@ -51,7 +51,15 @@ fn repl(gpa: *Allocator) !void {
             return e;
         };
         
-        try vm.interpret(line_buffer.items);
+        vm.interpret(line_buffer.items) catch |e| {
+            if (e == vm.InterpretError.Compilation) {
+                // TODO
+            } else if (e == vm.InterpretError.Runtime) {
+                // TODO
+            } else {
+                return e;
+            }
+        };
     }
 }
 

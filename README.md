@@ -11,4 +11,5 @@ Using zig version 0.7.1.
 - [x] Chapter 14 Chunks of Bytecode
 - [x] Chapter 15 A Virtual Machine
 - [x] Chapter 16 Scanning on Demand
-- [ ] Chapter 17 Compiling Expressions
+- [x] Chapter 17 Compiling Expressions
+- [ ] Chapter 18 Types of Values

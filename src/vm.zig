@@ -41,60 +41,66 @@ pub fn deinit() void { }
 pub fn interpret(source_code: []const u8) !void {
     std.debug.assert(vm.value_stack.top == 0);
     defer std.debug.assert(vm.value_stack.top == 0);
+    
+    var chunk = try compile(vm.allocator, source_code); 
+    defer chunk.deinit();
 
-    try compile(vm.allocator, source_code);
+    vm.chunk = &chunk;
+    vm.ip = 0;
+
+    try run();
 }
 
 fn readByte() u8 {
-    const result = vm.chunk.code.items[self.ip]; 
-    self.ip += 1;
+    const result = vm.chunk.code.items[vm.ip]; 
+    vm.ip += 1;
     return result;
 }
 
-fn readConstant(self: *Self) Value {
-    return self.chunk.constants.items[self.readByte()];
+fn readConstant() Value {
+    return vm.chunk.constants.items[readByte()];
 }
 
-fn binaryOp(self: *Self, comptime op: fn (Value, Value) Value) void {
-    const b = self.value_stack.pop();
-    const a = self.value_stack.pop();
+fn binaryOp(comptime op: fn (Value, Value) Value) void {
+    const b = vm.value_stack.pop();
+    const a = vm.value_stack.pop();
 
-    self.value_stack.push(op(a, b));
+    vm.value_stack.push(op(a, b));
 }
 
-fn run(self: *Self) !void {
+fn run() !void {
     const stdout = std.io.getStdOut().writer();
 
     while (true) {
         var next_ip: usize = undefined;
         if (debug.trace_execution) {
-            const stack_values = self.value_stack.buffer[0..self.value_stack.top];
+            const stack_values = vm.value_stack.buffer[0..vm.value_stack.top];
             try debug.dumpValueStack(stdout, stack_values);
-            next_ip = try debug.disassembleInstruction(stdout, self.chunk, self.ip);
+            next_ip = try debug.disassembleInstruction(stdout, vm.chunk, vm.ip);
         }
 
-        const instruction = @intToEnum(OpCode, self.readByte());
+        const instruction = @intToEnum(OpCode, readByte());
         switch (instruction) {
             .op_return => return,
-            .op_pop => _ = self.value_stack.pop(),
+            .op_pop => _ = vm.value_stack.pop(),
             .op_print => {
-                const v = self.value_stack.buffer[self.value_stack.top - 1];
+                const v = vm.value_stack.buffer[vm.value_stack.top - 1];
                 try value.printValue(stdout, v);
                 _ = try stdout.write("\n");
             },
             .op_constant => {
-                const v = self.readConstant();
-                self.value_stack.push(v);
+                const v = readConstant();
+                vm.value_stack.push(v);
             },
-            .op_negate => self.value_stack.push(-self.value_stack.pop()),
-            .op_add => self.binaryOp(add),
-            .op_subtract => self.binaryOp(subtract),
-            .op_multiply => self.binaryOp(multiply),
-            .op_divide => self.binaryOp(divide),
+            .op_negate => vm.value_stack.push(-vm.value_stack.pop()),
+            .op_add => binaryOp(add),
+            .op_subtract => binaryOp(subtract),
+            .op_multiply => binaryOp(multiply),
+            .op_divide => binaryOp(divide),
         }
         
         if (debug.trace_execution) {
-            std.debug.assert(next_ip == self.ip);
+            std.debug.assert(next_ip == vm.ip);
         }
     }
 }

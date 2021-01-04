@@ -6,6 +6,7 @@ const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
 pub const trace_execution = true;
+pub const print_code = true;
 
 // XXX(tri): @Investigate Is there a better way of passing the writer object
 // rather than using anytype?  
@@ -74,7 +75,7 @@ pub fn dumpValueStack(writer: anytype, stack: []value.Value) !void {
 }
 
 
-fn expect_line(buffer: []const u8, expected: []const u8) usize {
+fn expectLine(buffer: []const u8, expected: []const u8) usize {
     const expect = std.testing.expect;
     const eql = std.mem.eql;
 
@@ -98,8 +99,8 @@ test "disassembleChunk op_return" {
     try disassembleChunk(writer, &chunk, "test chunk");
     
     var line_start: usize = 0;
-    line_start += expect_line(buffer[line_start..], "== test chunk ==");
-    line_start += expect_line(buffer[line_start..], "0000    0  OP_RETURN       ");
+    line_start += expectLine(buffer[line_start..], "== test chunk ==");
+    line_start += expectLine(buffer[line_start..], "0000    0  OP_RETURN       ");
 }
 
 test "disassembleChunk op_constant" {
@@ -115,8 +116,8 @@ test "disassembleChunk op_constant" {
     try disassembleChunk(writer, &chunk, "test chunk");
     
     var line_start: usize = 0;
-    line_start += expect_line(buffer[line_start..], "== test chunk ==");
-    line_start += expect_line(buffer[line_start..], "0000    0  OP_CONSTANT      00 '1.2'");
+    line_start += expectLine(buffer[line_start..], "== test chunk ==");
+    line_start += expectLine(buffer[line_start..], "0000    0  OP_CONSTANT      00 '1.2'");
 
 }
 

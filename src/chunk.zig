@@ -58,8 +58,8 @@ pub const Chunk = struct {
     
     /// Add a constant to the constant store.  Returns the index of the
     /// constant in the storage.
-    pub fn addConstant(self: *Self, constant: Value) !u8 {
-        var index = @intCast(u8, self.constants.items.len);
+    pub fn addConstant(self: *Self, constant: Value) !usize {
+        var index = self.constants.items.len;
         try self.constants.append(constant);
         return index;
     }
