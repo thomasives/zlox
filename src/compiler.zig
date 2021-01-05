@@ -9,6 +9,7 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Token = scanner.Token;
 const TokenTag = scanner.TokenTag;
+const Value = @import("value.zig").Value;
 
 const Parser = struct {
     current: Token = undefined,
@@ -82,6 +83,48 @@ fn buildRulesTable() [rule_table_size]ParseRule {
 
     table[@enumToInt(TokenTag.token_number)].prefix = number;
     
+    table[@enumToInt(TokenTag.token_nil)].prefix = literal;
+    table[@enumToInt(TokenTag.token_true)].prefix = literal;
+    table[@enumToInt(TokenTag.token_false)].prefix = literal;
+    
+    table[@enumToInt(TokenTag.token_bang)].prefix = unary;
+    
+    table[@enumToInt(TokenTag.token_bang_equal)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_equality),
+    };
+
+    table[@enumToInt(TokenTag.token_equal_equal)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_equality),
+    };
+
+    table[@enumToInt(TokenTag.token_less)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_comparison),
+    };
+
+    table[@enumToInt(TokenTag.token_less_equal)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_comparison),
+    };
+
+    table[@enumToInt(TokenTag.token_greater)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_comparison),
+    };
+
+    table[@enumToInt(TokenTag.token_greater_equal)] = ParseRule {
+        .prefix = null,
+        .infix = binary,
+        .precedence = @enumToInt(Precedence.prec_comparison),
+    };
+    
     return table;
 }
 
@@ -134,8 +177,18 @@ fn expression() ParseError!void {
     try parsePrecedence(.prec_assignment);
 }
 
+fn literal() ParseError!void {
+    switch(parser.previous.tag) {
+        .token_false => try emitOp(.op_false),
+        .token_true => try emitOp(.op_true),
+        .token_nil => try emitOp(.op_nil),
+        else => unreachable,
+    }
+}
+
 fn number() ParseError!void {
-    const value = try std.fmt.parseFloat(f64, parser.previous.span);
+    const num = try std.fmt.parseFloat(f64, parser.previous.span);
+    const value = Value { .number = num };
     try emitOpByte(.op_constant, try makeConstant(value));
 }
 
@@ -151,6 +204,7 @@ fn unary() ParseError!void {
 
     switch(tag) {
         .token_minus => try emitOp(.op_negate),
+        .token_bang => try emitOp(.op_not),
         else => unreachable,
     }
 }
@@ -166,6 +220,12 @@ fn binary() ParseError!void {
         .token_minus => try emitOp(.op_subtract),
         .token_star => try emitOp(.op_multiply),
         .token_slash => try emitOp(.op_divide),
+        .token_equal_equal => try emitOp(.op_equal),
+        .token_bang_equal => try emitOp(.op_not_equal),
+        .token_less => try emitOp(.op_less),
+        .token_less_equal => try emitOp(.op_less_equal),
+        .token_greater => try emitOp(.op_greater),
+        .token_greater_equal => try emitOp(.op_greater_equal),
         else => unreachable,
     }
 }
@@ -183,7 +243,7 @@ fn endCompiler() !void {
     }
 }
 
-fn makeConstant(value: f64) !u8 {
+fn makeConstant(value: Value) !u8 {
     const index = try compiling_chunk.addConstant(value);
 
     if (index > std.math.maxInt(u8)) {

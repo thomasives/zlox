@@ -5,8 +5,8 @@ const Chunk = @import("chunk.zig").Chunk;
 const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
-pub const trace_execution = true;
-pub const print_code = true;
+pub const trace_execution = false;
+pub const print_code = false;
 
 // XXX(tri): @Investigate Is there a better way of passing the writer object
 // rather than using anytype?  
@@ -20,9 +20,7 @@ fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
 fn constantInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name: []const u8) !usize {
     const index = chunk.code.items[offset + 1];
 
-    try writer.print("{:<16} {x:0<2} '", .{ name, index });
-    try value.printValue(writer, chunk.constants.items[index]);
-    try writer.print("'\n", .{});
+    try writer.print("{:<16} {x:0<2} '{}'\n", .{ name, index, chunk.constants.items[index]});
 
     return offset + 2;
 }
@@ -40,6 +38,16 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
         .op_subtract => return try simpleInstruction(writer, offset, "OP_SUBTRACT"),
         .op_multiply => return try simpleInstruction(writer, offset, "OP_MULTIPLY"),
         .op_divide => return try simpleInstruction(writer, offset, "OP_DIVIDE"),
+        .op_false => return try simpleInstruction(writer, offset, "OP_FALSE"),
+        .op_true => return try simpleInstruction(writer, offset, "OP_TRUE"),
+        .op_nil => return try simpleInstruction(writer, offset, "OP_NIL"),
+        .op_not => return try simpleInstruction(writer, offset, "OP_NOT"),
+        .op_equal => return try simpleInstruction(writer, offset, "OP_EQUAL"),
+        .op_not_equal => return try simpleInstruction(writer, offset, "OP_NOT_EQUAL"),
+        .op_less => return try simpleInstruction(writer, offset, "OP_LESS"),
+        .op_less_equal => return try simpleInstruction(writer, offset, "OP_LESS_EQUAL"),
+        .op_greater => return try simpleInstruction(writer, offset, "OP_GREATER"),
+        .op_greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
     }
 }
 
@@ -67,9 +75,7 @@ pub fn disassembleChunk(writer: anytype, chunk: *const Chunk, name: []const u8) 
 pub fn dumpValueStack(writer: anytype, stack: []value.Value) !void {
     _ = try writer.write("    ");
     for (stack) |v| {
-        _ = try writer.write("[ ");
-        try value.printValue(writer, v);
-        _ = try writer.write(" ]");
+        try writer.print("[ {} ]", .{ v });
     }
     _ = try writer.write("\n");
 }

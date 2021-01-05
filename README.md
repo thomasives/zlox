@@ -12,4 +12,5 @@ Using zig version 0.7.1.
 - [x] Chapter 15 A Virtual Machine
 - [x] Chapter 16 Scanning on Demand
 - [x] Chapter 17 Compiling Expressions
-- [ ] Chapter 18 Types of Values
+- [x] Chapter 18 Types of Values
+- [ ] Chapter 19 Strings

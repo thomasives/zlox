@@ -14,6 +14,16 @@ pub const OpCode = enum(u8) {
     op_subtract,
     op_multiply,
     op_divide,
+    op_true,
+    op_false,
+    op_nil,
+    op_not,
+    op_equal,
+    op_not_equal,
+    op_greater,
+    op_less,
+    op_greater_equal,
+    op_less_equal,
 };
 
 /// A Chunk of bytecode.  This is the result of compiling a single

@@ -27,6 +27,10 @@ const Vm = struct {
     // Instruction pointer into the currently executing chunk
     ip: usize,
     value_stack: Stack,
+    
+    pub fn peek(self: *Self, distance: usize) Value {
+        return self.value_stack.buffer[self.value_stack.top - 1 - distance];
+    }
 };
 
 var vm: Vm = undefined;
@@ -41,6 +45,7 @@ pub fn deinit() void { }
 pub fn interpret(source_code: []const u8) !void {
     std.debug.assert(vm.value_stack.top == 0);
     defer std.debug.assert(vm.value_stack.top == 0);
+    errdefer vm.value_stack.top = 0;
     
     var chunk = try compile(vm.allocator, source_code); 
     defer chunk.deinit();
@@ -61,11 +66,22 @@ fn readConstant() Value {
     return vm.chunk.constants.items[readByte()];
 }
 
-fn binaryOp(comptime op: fn (Value, Value) Value) void {
-    const b = vm.value_stack.pop();
-    const a = vm.value_stack.pop();
+fn binaryOp(comptime T: type, comptime op: fn (f64, f64) T) !void {
+    if (vm.peek(0) != .number or vm.peek(1) != .number) {
+        try runtimeError("Operands must be numbers.", .{});
+        return InterpretError.Runtime;
+    }
 
-    vm.value_stack.push(op(a, b));
+    const b = vm.value_stack.pop().number;
+    const a = vm.value_stack.pop().number;
+    
+    const result = switch(T) {
+        f64 => Value { .number = op(a, b) },
+        bool => Value { .boolean = op(a, b) },
+        else => @compileError("Cannot handle type."),
+    };
+
+    vm.value_stack.push(result);
 }
 
 fn run() !void {
@@ -84,19 +100,49 @@ fn run() !void {
             .op_return => return,
             .op_pop => _ = vm.value_stack.pop(),
             .op_print => {
-                const v = vm.value_stack.buffer[vm.value_stack.top - 1];
-                try value.printValue(stdout, v);
-                _ = try stdout.write("\n");
+                const v = vm.peek(0);
+                try stdout.print("{}\n", .{v});
             },
             .op_constant => {
                 const v = readConstant();
                 vm.value_stack.push(v);
             },
-            .op_negate => vm.value_stack.push(-vm.value_stack.pop()),
-            .op_add => binaryOp(add),
-            .op_subtract => binaryOp(subtract),
-            .op_multiply => binaryOp(multiply),
-            .op_divide => binaryOp(divide),
+            .op_negate => {
+                if (vm.peek(0) != .number) {
+                    try runtimeError("Operand must be a number", .{});
+                    return InterpretError.Runtime;
+                }
+
+                var operand = vm.value_stack.pop().number;
+                var result = Value { .number = -operand };
+                vm.value_stack.push(result);
+            },
+            .op_not => {
+                var operand = vm.value_stack.pop();
+                var result = Value { .boolean = isFalsey(operand) };
+                vm.value_stack.push(result);
+            },
+            .op_false => vm.value_stack.push(Value { .boolean = false }),
+            .op_true => vm.value_stack.push(Value { .boolean = true }),
+            .op_nil => vm.value_stack.push(Value.nil),
+            .op_add => try binaryOp(f64, add),
+            .op_subtract => try binaryOp(f64, subtract),
+            .op_multiply => try binaryOp(f64, multiply),
+            .op_divide => try binaryOp(f64, divide),
+            .op_equal => {
+                var b = vm.value_stack.pop();
+                var a = vm.value_stack.pop();
+                vm.value_stack.push(Value { .boolean = value.equal(a, b)});
+            },
+            .op_not_equal => {
+                var b = vm.value_stack.pop();
+                var a = vm.value_stack.pop();
+                vm.value_stack.push(Value { .boolean = !value.equal(a, b)});
+            },
+            .op_greater => try binaryOp(bool, greater),
+            .op_greater_equal => try binaryOp(bool, greaterEqual),
+            .op_less => try binaryOp(bool, less),
+            .op_less_equal => try binaryOp(bool, lessEqual),
         }
         
         if (debug.trace_execution) {
@@ -105,18 +151,50 @@ fn run() !void {
     }
 }
 
-fn add(a: Value, b: Value) Value {
+fn runtimeError(comptime fmt: []const u8, args: anytype) !void {
+    const stderr = std.io.getStdErr().writer();
+    try stderr.print(fmt, args);
+    
+    const line = vm.chunk.lines.items[vm.ip];
+    try stderr.print("\n[line {}] in script\n", .{line});
+}
+
+fn isFalsey(a: Value) bool {
+    switch (a) {
+        .nil => return true,
+        .boolean => |b| return !b,
+        else => return false,
+    }
+}
+
+fn add(a: f64, b: f64) f64 {
     return a + b;
 }
 
-fn subtract(a: Value, b: Value) Value {
+fn subtract(a: f64, b: f64) f64 {
     return a - b;
 }
 
-fn multiply(a: Value, b: Value) Value {
+fn multiply(a: f64, b: f64) f64 {
     return a * b;
 }
 
-fn divide(a: Value, b: Value) Value {
+fn divide(a: f64, b: f64) f64 {
     return a / b;
+}
+
+fn greater(a: f64, b: f64) bool {
+    return a > b;
+}
+
+fn less(a: f64, b: f64) bool {
+    return a < b;
+}
+
+fn greaterEqual(a: f64, b: f64) bool {
+    return a >= b;
+}
+
+fn lessEqual(a: f64, b: f64) bool {
+    return a <= b;
 }
