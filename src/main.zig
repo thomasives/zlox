@@ -16,7 +16,7 @@ pub fn main() anyerror!void {
     defer vm.deinit();
 
     var arg_it = process.args();
-    
+
     const exe_name = try arg_it.next(gpa).?;
     defer gpa.free(exe_name);
 
@@ -39,7 +39,7 @@ pub fn main() anyerror!void {
 fn repl(gpa: *Allocator) !void {
     var line_buffer = ArrayList(u8).init(gpa);
     defer line_buffer.deinit();
-    
+
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
 
@@ -50,7 +50,7 @@ fn repl(gpa: *Allocator) !void {
             _ = try stdout.write("\n");
             return e;
         };
-        
+
         vm.interpret(line_buffer.items) catch |e| {
             if (e == vm.InterpretError.Compilation) {
                 // TODO
@@ -74,7 +74,7 @@ fn readFile(gpa: *Allocator, file_path: []const u8) ![]const u8 {
     var file = try std.fs.cwd().openFile(file_path, .{});
     defer file.close();
     var reader = file.reader();
-    
+
     var source_code = try reader.readAllAlloc(gpa, 1024 * 1024 * 1024);
     return source_code;
 }

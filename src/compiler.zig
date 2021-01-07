@@ -19,17 +19,17 @@ const Parser = struct {
 };
 
 const Precedence = enum(u8) {
-    prec_none,
-    prec_assignment,
-    prec_or,
-    prec_and,
-    prec_equality,
-    prec_comparison,
-    prec_term,
-    prec_factor,
-    prec_unary,
-    prec_call,
-    prec_primary,
+    none,
+    assignment,
+    or_,
+    and_,
+    equality,
+    comparison,
+    term,
+    factor,
+    unary,
+    call,
+    primary,
 };
 const ParseFn = fn () ParseError!void;
 
@@ -38,121 +38,114 @@ const ParseError = anyerror;
 const ParseRule = struct {
     prefix: ?ParseFn,
     infix: ?ParseFn,
-    precedence: u8,
+    precedence: Precedence,
 };
 
-const rule_table_size = @typeInfo(TokenTag).Enum.fields.len;
-const rules_table: [rule_table_size]ParseRule = comptime buildRulesTable(); 
-
-fn buildRulesTable() [rule_table_size]ParseRule {
-    var table: [rule_table_size]ParseRule = undefined;
-
-    for (table) |*rule| {
-        rule.* = ParseRule {
-            .prefix = null,
-            .infix = null,
-            .precedence = @enumToInt(Precedence.prec_none),
-        };
-    }
-
-    table[@enumToInt(TokenTag.token_left_paren)].prefix = grouping;
-
-    table[@enumToInt(TokenTag.token_minus)] = ParseRule {
-        .prefix = unary, 
-        .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_term),
-     };
-
-    table[@enumToInt(TokenTag.token_plus)] = ParseRule {
-        .prefix = null, 
-        .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_term),
-     };
-
-    table[@enumToInt(TokenTag.token_star)] = ParseRule {
-        .prefix = null, 
-        .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_factor),
-     };
-
-    table[@enumToInt(TokenTag.token_slash)] = ParseRule {
-        .prefix = null, 
-        .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_factor),
-     };
-
-    table[@enumToInt(TokenTag.token_number)].prefix = number;
-    
-    table[@enumToInt(TokenTag.token_nil)].prefix = literal;
-    table[@enumToInt(TokenTag.token_true)].prefix = literal;
-    table[@enumToInt(TokenTag.token_false)].prefix = literal;
-    
-    table[@enumToInt(TokenTag.token_bang)].prefix = unary;
-    
-    table[@enumToInt(TokenTag.token_bang_equal)] = ParseRule {
+const rules_table = blk: {
+    var table = [_]ParseRule{.{
         .prefix = null,
+        .infix = null,
+        .precedence = .none,
+    }} ** @typeInfo(TokenTag).Enum.fields.len;
+
+    table[@enumToInt(TokenTag.left_paren)].prefix = grouping;
+
+    table[@enumToInt(TokenTag.minus)] = ParseRule{
+        .prefix = unary,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_equality),
+        .precedence = .term,
     };
 
-    table[@enumToInt(TokenTag.token_equal_equal)] = ParseRule {
+    table[@enumToInt(TokenTag.plus)] = ParseRule{
         .prefix = null,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_equality),
+        .precedence = .term,
     };
 
-    table[@enumToInt(TokenTag.token_less)] = ParseRule {
+    table[@enumToInt(TokenTag.star)] = ParseRule{
         .prefix = null,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_comparison),
+        .precedence = .factor,
     };
 
-    table[@enumToInt(TokenTag.token_less_equal)] = ParseRule {
+    table[@enumToInt(TokenTag.slash)] = ParseRule{
         .prefix = null,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_comparison),
+        .precedence = .factor,
     };
 
-    table[@enumToInt(TokenTag.token_greater)] = ParseRule {
+    table[@enumToInt(TokenTag.number)].prefix = number;
+
+    table[@enumToInt(TokenTag.nil)].prefix = literal;
+    table[@enumToInt(TokenTag.true_)].prefix = literal;
+    table[@enumToInt(TokenTag.false_)].prefix = literal;
+
+    table[@enumToInt(TokenTag.bang)].prefix = unary;
+
+    table[@enumToInt(TokenTag.bang_equal)] = ParseRule{
         .prefix = null,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_comparison),
+        .precedence = .equality,
     };
 
-    table[@enumToInt(TokenTag.token_greater_equal)] = ParseRule {
+    table[@enumToInt(TokenTag.equal_equal)] = ParseRule{
         .prefix = null,
         .infix = binary,
-        .precedence = @enumToInt(Precedence.prec_comparison),
+        .precedence = .equality,
     };
-    
-    return table;
-}
+
+    table[@enumToInt(TokenTag.less)] = ParseRule{
+        .prefix = null,
+        .infix = binary,
+        .precedence = .comparison,
+    };
+
+    table[@enumToInt(TokenTag.less_equal)] = ParseRule{
+        .prefix = null,
+        .infix = binary,
+        .precedence = .comparison,
+    };
+
+    table[@enumToInt(TokenTag.greater)] = ParseRule{
+        .prefix = null,
+        .infix = binary,
+        .precedence = .comparison,
+    };
+
+    table[@enumToInt(TokenTag.greater_equal)] = ParseRule{
+        .prefix = null,
+        .infix = binary,
+        .precedence = .comparison,
+    };
+
+    break :blk table;
+};
 
 fn getRule(tag: TokenTag) *const ParseRule {
     return &rules_table[@enumToInt(tag)];
 }
 
-var parser = Parser { };
+var parser = Parser{};
 var compiling_chunk: Chunk = undefined;
 
 pub fn compile(allocator: *Allocator, source_code: []const u8) !Chunk {
     scanner.init(source_code);
     compiling_chunk = Chunk.init(allocator);
     errdefer compiling_chunk.deinit();
-    
+
     parser.hadError = false;
     parser.panicMode = false;
 
     try advance();
     try expression();
-    try consume(.token_eof, "Expect end of expression.");
-    
+    try consume(.eof, "Expect end of expression.");
+
     if (parser.hadError) {
         return vm.InterpretError.Compilation;
     }
-    
+
     try endCompiler();
-    
+
     return compiling_chunk;
 }
 
@@ -161,12 +154,12 @@ fn parsePrecedence(prec: Precedence) ParseError!void {
     const prefixFn = getRule(parser.previous.tag).prefix;
     if (prefixFn == null) {
         try errorAtPrevious("Expect expression.");
-        return; 
+        return;
     }
-    
+
     try prefixFn.?();
-    
-    while (@enumToInt(prec) <= getRule(parser.current.tag).precedence) {
+
+    while (@enumToInt(prec) <= @enumToInt(getRule(parser.current.tag).precedence)) {
         try advance();
         const infixFn = getRule(parser.previous.tag).infix;
         try infixFn.?();
@@ -174,66 +167,66 @@ fn parsePrecedence(prec: Precedence) ParseError!void {
 }
 
 fn expression() ParseError!void {
-    try parsePrecedence(.prec_assignment);
+    try parsePrecedence(.assignment);
 }
 
 fn literal() ParseError!void {
-    switch(parser.previous.tag) {
-        .token_false => try emitOp(.op_false),
-        .token_true => try emitOp(.op_true),
-        .token_nil => try emitOp(.op_nil),
+    switch (parser.previous.tag) {
+        .false_ => try emitOp(.false_),
+        .true_ => try emitOp(.true_),
+        .nil => try emitOp(.nil),
         else => unreachable,
     }
 }
 
 fn number() ParseError!void {
     const num = try std.fmt.parseFloat(f64, parser.previous.span);
-    const value = Value { .number = num };
-    try emitOpByte(.op_constant, try makeConstant(value));
+    const value = Value{ .number = num };
+    try emitOpByte(.constant, try makeConstant(value));
 }
 
 fn grouping() ParseError!void {
     try expression();
-    try consume(.token_right_paren, "Expected ')' after expression.");
+    try consume(.right_paren, "Expected ')' after expression.");
 }
 
 fn unary() ParseError!void {
     const tag = parser.previous.tag;
 
-    try parsePrecedence(.prec_unary);
+    try parsePrecedence(.unary);
 
-    switch(tag) {
-        .token_minus => try emitOp(.op_negate),
-        .token_bang => try emitOp(.op_not),
+    switch (tag) {
+        .minus => try emitOp(.negate),
+        .bang => try emitOp(.not),
         else => unreachable,
     }
 }
 
 fn binary() ParseError!void {
     const tag = parser.previous.tag;
-    
+
     const rule = getRule(tag);
-    try parsePrecedence(@intToEnum(Precedence, rule.precedence + 1));
-    
-    switch(tag) {
-        .token_plus => try emitOp(.op_add),
-        .token_minus => try emitOp(.op_subtract),
-        .token_star => try emitOp(.op_multiply),
-        .token_slash => try emitOp(.op_divide),
-        .token_equal_equal => try emitOp(.op_equal),
-        .token_bang_equal => try emitOp(.op_not_equal),
-        .token_less => try emitOp(.op_less),
-        .token_less_equal => try emitOp(.op_less_equal),
-        .token_greater => try emitOp(.op_greater),
-        .token_greater_equal => try emitOp(.op_greater_equal),
+    try parsePrecedence(@intToEnum(Precedence, @enumToInt(rule.precedence) + 1));
+
+    switch (tag) {
+        .plus => try emitOp(.add),
+        .minus => try emitOp(.subtract),
+        .star => try emitOp(.multiply),
+        .slash => try emitOp(.divide),
+        .equal_equal => try emitOp(.equal),
+        .bang_equal => try emitOp(.not_equal),
+        .less => try emitOp(.less),
+        .less_equal => try emitOp(.less_equal),
+        .greater => try emitOp(.greater),
+        .greater_equal => try emitOp(.greater_equal),
         else => unreachable,
     }
 }
 
 fn endCompiler() !void {
-    try emitOp(.op_print);
-    try emitOp(.op_pop);
-    try emitOp(.op_return);
+    try emitOp(.print);
+    try emitOp(.pop);
+    try emitOp(.return_);
 
     if (debug.print_code) {
         const writer = std.io.getStdOut().writer();
@@ -256,11 +249,11 @@ fn makeConstant(value: Value) !u8 {
 
 fn advance() ParseError!void {
     parser.previous = parser.current;
-    
+
     while (true) {
         parser.current = scanner.nextToken();
-        if (parser.current.tag != .token_error) break;
-        
+        if (parser.current.tag != .error_) break;
+
         try errorAtCurrent(parser.current.span);
     }
 }
@@ -270,7 +263,7 @@ fn consume(expected: scanner.TokenTag, error_message: []const u8) !void {
         try advance();
         return;
     }
-    
+
     try errorAtCurrent(error_message);
 }
 
@@ -296,17 +289,17 @@ fn errorAt(token: scanner.Token, message: []const u8) ParseError!void {
     parser.panicMode = true;
 
     const stderr = std.io.getStdErr().writer();
-    
+
     try stderr.print("[line {}] Error ", .{token.line});
-    
-    if (token.tag == .token_eof) {
+
+    if (token.tag == .eof) {
         try stderr.print("at end", .{});
-    } else if (token.tag == .token_error) {
+    } else if (token.tag == .error_) {
         // nothing
     } else {
         try stderr.print("at '{}'", .{token.span});
     }
-    
+
     try stderr.print(": {}\n", .{message});
-    parser.hadError = true; 
+    parser.hadError = true;
 }

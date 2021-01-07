@@ -5,25 +5,25 @@ const Value = @import("value.zig").Value;
 /// One byte op codes for the instructions used in our
 /// bytecode interpreter.
 pub const OpCode = enum(u8) {
-    op_constant,
-    op_pop,
-    op_print,
-    op_return,
-    op_negate,
-    op_add,
-    op_subtract,
-    op_multiply,
-    op_divide,
-    op_true,
-    op_false,
-    op_nil,
-    op_not,
-    op_equal,
-    op_not_equal,
-    op_greater,
-    op_less,
-    op_greater_equal,
-    op_less_equal,
+    constant,
+    pop,
+    print,
+    return_,
+    negate,
+    add,
+    subtract,
+    multiply,
+    divide,
+    true_,
+    false_,
+    nil,
+    not,
+    equal,
+    not_equal,
+    greater,
+    less,
+    greater_equal,
+    less_equal,
 };
 
 /// A Chunk of bytecode.  This is the result of compiling a single
@@ -31,9 +31,12 @@ pub const OpCode = enum(u8) {
 pub const Chunk = struct {
     const Self = @This();
 
-    code: Code, /// the bytecode
-    lines: Lines, /// source file line numbers that generated the bytecode
-    constants: Constants, /// literal values that appeared in the source
+    /// the bytecode
+    code: Code,
+    /// source file line numbers that generated the bytecode
+    lines: Lines,
+    /// literal values that appeared in the source
+    constants: Constants,
 
     pub const Code = ArrayList(u8);
     pub const Constants = ArrayList(Value);
@@ -53,19 +56,19 @@ pub const Chunk = struct {
         self.lines.deinit();
     }
 
-    /// Write a single byte to the bytecode that was generated from the 
+    /// Write a single byte to the bytecode that was generated from the
     /// source file at the specified line.
     pub fn write(self: *Self, byte: u8, line: usize) !void {
         try self.code.append(byte);
         try self.lines.append(line);
     }
 
-    /// Write an op code to the bytecode that was generated from the 
+    /// Write an op code to the bytecode that was generated from the
     /// source file at the specified line.
     pub fn writeOp(self: *Self, opCode: OpCode, line: usize) !void {
         try self.write(@enumToInt(opCode), line);
     }
-    
+
     /// Add a constant to the constant store.  Returns the index of the
     /// constant in the storage.
     pub fn addConstant(self: *Self, constant: Value) !usize {

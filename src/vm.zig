@@ -10,24 +10,24 @@ const Chunk = @import("chunk.zig").Chunk;
 const Value = value.Value;
 const Allocator = std.mem.Allocator;
 
-pub const InterpretError = error {
+pub const InterpretError = error{
     Runtime,
     Compilation,
 };
-    
+
 const Vm = struct {
     const Self = @This();
-    
+
     pub const Stack = stack.Stack(Value, 256);
-    
+
     allocator: *std.mem.Allocator,
 
     // The currently executing chunk
-    chunk: *Chunk,  
+    chunk: *Chunk,
     // Instruction pointer into the currently executing chunk
     ip: usize,
     value_stack: Stack,
-    
+
     pub fn peek(self: *Self, distance: usize) Value {
         return self.value_stack.buffer[self.value_stack.top - 1 - distance];
     }
@@ -40,14 +40,14 @@ pub fn init(allocator: *Allocator) !void {
     vm.value_stack = .{};
 }
 
-pub fn deinit() void { }
+pub fn deinit() void {}
 
 pub fn interpret(source_code: []const u8) !void {
     std.debug.assert(vm.value_stack.top == 0);
     defer std.debug.assert(vm.value_stack.top == 0);
     errdefer vm.value_stack.top = 0;
-    
-    var chunk = try compile(vm.allocator, source_code); 
+
+    var chunk = try compile(vm.allocator, source_code);
     defer chunk.deinit();
 
     vm.chunk = &chunk;
@@ -57,7 +57,7 @@ pub fn interpret(source_code: []const u8) !void {
 }
 
 fn readByte() u8 {
-    const result = vm.chunk.code.items[vm.ip]; 
+    const result = vm.chunk.code.items[vm.ip];
     vm.ip += 1;
     return result;
 }
@@ -74,10 +74,10 @@ fn binaryOp(comptime T: type, comptime op: fn (f64, f64) T) !void {
 
     const b = vm.value_stack.pop().number;
     const a = vm.value_stack.pop().number;
-    
-    const result = switch(T) {
-        f64 => Value { .number = op(a, b) },
-        bool => Value { .boolean = op(a, b) },
+
+    const result = switch (T) {
+        f64 => Value{ .number = op(a, b) },
+        bool => Value{ .boolean = op(a, b) },
         else => @compileError("Cannot handle type."),
     };
 
@@ -97,54 +97,54 @@ fn run() !void {
 
         const instruction = @intToEnum(OpCode, readByte());
         switch (instruction) {
-            .op_return => return,
-            .op_pop => _ = vm.value_stack.pop(),
-            .op_print => {
+            .return_ => return,
+            .pop => _ = vm.value_stack.pop(),
+            .print => {
                 const v = vm.peek(0);
                 try stdout.print("{}\n", .{v});
             },
-            .op_constant => {
+            .constant => {
                 const v = readConstant();
                 vm.value_stack.push(v);
             },
-            .op_negate => {
+            .negate => {
                 if (vm.peek(0) != .number) {
                     try runtimeError("Operand must be a number", .{});
                     return InterpretError.Runtime;
                 }
 
                 var operand = vm.value_stack.pop().number;
-                var result = Value { .number = -operand };
+                var result = Value{ .number = -operand };
                 vm.value_stack.push(result);
             },
-            .op_not => {
+            .not => {
                 var operand = vm.value_stack.pop();
-                var result = Value { .boolean = isFalsey(operand) };
+                var result = Value{ .boolean = isFalsey(operand) };
                 vm.value_stack.push(result);
             },
-            .op_false => vm.value_stack.push(Value { .boolean = false }),
-            .op_true => vm.value_stack.push(Value { .boolean = true }),
-            .op_nil => vm.value_stack.push(Value.nil),
-            .op_add => try binaryOp(f64, add),
-            .op_subtract => try binaryOp(f64, subtract),
-            .op_multiply => try binaryOp(f64, multiply),
-            .op_divide => try binaryOp(f64, divide),
-            .op_equal => {
+            .false_ => vm.value_stack.push(Value{ .boolean = false }),
+            .true_ => vm.value_stack.push(Value{ .boolean = true }),
+            .nil => vm.value_stack.push(Value.nil),
+            .add => try binaryOp(f64, add),
+            .subtract => try binaryOp(f64, subtract),
+            .multiply => try binaryOp(f64, multiply),
+            .divide => try binaryOp(f64, divide),
+            .equal => {
                 var b = vm.value_stack.pop();
                 var a = vm.value_stack.pop();
-                vm.value_stack.push(Value { .boolean = value.equal(a, b)});
+                vm.value_stack.push(Value{ .boolean = value.equal(a, b) });
             },
-            .op_not_equal => {
+            .not_equal => {
                 var b = vm.value_stack.pop();
                 var a = vm.value_stack.pop();
-                vm.value_stack.push(Value { .boolean = !value.equal(a, b)});
+                vm.value_stack.push(Value{ .boolean = !value.equal(a, b) });
             },
-            .op_greater => try binaryOp(bool, greater),
-            .op_greater_equal => try binaryOp(bool, greaterEqual),
-            .op_less => try binaryOp(bool, less),
-            .op_less_equal => try binaryOp(bool, lessEqual),
+            .greater => try binaryOp(bool, greater),
+            .greater_equal => try binaryOp(bool, greaterEqual),
+            .less => try binaryOp(bool, less),
+            .less_equal => try binaryOp(bool, lessEqual),
         }
-        
+
         if (debug.trace_execution) {
             std.debug.assert(next_ip == vm.ip);
         }
@@ -154,7 +154,7 @@ fn run() !void {
 fn runtimeError(comptime fmt: []const u8, args: anytype) !void {
     const stderr = std.io.getStdErr().writer();
     try stderr.print(fmt, args);
-    
+
     const line = vm.chunk.lines.items[vm.ip];
     try stderr.print("\n[line {}] in script\n", .{line});
 }
