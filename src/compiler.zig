@@ -3,13 +3,14 @@ const std = @import("std");
 const scanner = @import("scanner.zig");
 const vm = @import("vm.zig");
 const debug = @import("debug.zig");
+const vl = @import("value.zig");
 
 const Allocator = std.mem.Allocator;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Token = scanner.Token;
 const TokenTag = scanner.TokenTag;
-const Value = @import("value.zig").Value;
+const Value = vl.Value;
 
 const Parser = struct {
     current: Token = undefined,
@@ -79,6 +80,7 @@ const rules_table = blk: {
     table[@enumToInt(TokenTag.nil)].prefix = literal;
     table[@enumToInt(TokenTag.true_)].prefix = literal;
     table[@enumToInt(TokenTag.false_)].prefix = literal;
+    table[@enumToInt(TokenTag.string)].prefix = string;
 
     table[@enumToInt(TokenTag.bang)].prefix = unary;
 
@@ -181,8 +183,18 @@ fn literal() ParseError!void {
 
 fn number() ParseError!void {
     const num = try std.fmt.parseFloat(f64, parser.previous.span);
-    const value = Value{ .number = num };
-    try emitOpByte(.constant, try makeConstant(value));
+    const val = Value{ .number = num };
+    try emitOpByte(.constant, try makeConstant(val));
+}
+
+fn string() ParseError!void {
+    const allocator = vm.getAllocator();
+
+    var obj = try vm.createObj(vl.String);
+    const len = parser.previous.span.len;
+    obj.chars = try allocator.dupe(u8, parser.previous.span[1 .. len - 1]);
+
+    try emitOpByte(.constant, try makeConstant(Value{ .obj = &obj.base }));
 }
 
 fn grouping() ParseError!void {
@@ -236,8 +248,8 @@ fn endCompiler() !void {
     }
 }
 
-fn makeConstant(value: Value) !u8 {
-    const index = try compiling_chunk.addConstant(value);
+fn makeConstant(val: Value) !u8 {
+    const index = try compiling_chunk.addConstant(val);
 
     if (index > std.math.maxInt(u8)) {
         try errorAtPrevious("Too many constants for single chunk.");

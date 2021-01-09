@@ -1,20 +1,29 @@
 const std = @import("std");
 
-const value = @import("value.zig");
+const vl = @import("value.zig");
 const stack = @import("stack.zig");
 const debug = @import("debug.zig");
-const compile = @import("compiler.zig").compile;
 
 const OpCode = @import("chunk.zig").OpCode;
 const Chunk = @import("chunk.zig").Chunk;
-const Value = value.Value;
+const Value = vl.Value;
+const Obj = vl.Obj;
 const Allocator = std.mem.Allocator;
 
+const compile = @import("compiler.zig").compile;
+
+// TODO remove me
+pub fn getAllocator() *Allocator {
+    return vm.allocator;
+}
+
+// TODO sort out error handling
 pub const InterpretError = error{
     Runtime,
     Compilation,
 };
 
+/// The lox virtual machine
 const Vm = struct {
     const Self = @This();
 
@@ -22,30 +31,71 @@ const Vm = struct {
 
     allocator: *std.mem.Allocator,
 
-    // The currently executing chunk
+    /// The currently executing chunk
     chunk: *Chunk,
-    // Instruction pointer into the currently executing chunk
+    /// Instruction pointer into the currently executing chunk
     ip: usize,
-    value_stack: Stack,
-
-    pub fn peek(self: *Self, distance: usize) Value {
-        return self.value_stack.buffer[self.value_stack.top - 1 - distance];
-    }
+    /// Runtime stack of values
+    stack: Stack,
+    /// Linked list of objects
+    objects: ?*Obj,
 };
 
 var vm: Vm = undefined;
 
-pub fn init(allocator: *Allocator) !void {
-    vm.allocator = allocator;
-    vm.value_stack = .{};
+/// Create an object managed by the VM.
+pub fn createObj(comptime T: type) !*T {
+    var ptr = try vm.allocator.create(T);
+
+    ptr.base = Obj{
+        .ty = T.base_type,
+        .next = vm.objects,
+    };
+    vm.objects = &ptr.base;
+
+    return ptr;
 }
 
-pub fn deinit() void {}
+/// Free an object managed by the VM
+pub fn destroyObj(obj: *Obj) void {
+    switch (obj.ty) {
+        .string => {
+            const string = obj.cast(vl.String).?;
+            vm.allocator.destroy(obj);
+        },
+    }
+}
+
+/// Free the allocated memebers of a managed object
+pub fn cleanObj(obj: *Obj) void {
+    switch (obj.ty) {
+        .string => {
+            const string = obj.cast(vl.String).?;
+            vm.allocator.free(string.chars);
+        },
+    }
+}
+
+pub fn init(allocator: *Allocator) !void {
+    vm.allocator = allocator;
+    vm.stack = .{};
+    vm.objects = null;
+}
+
+pub fn deinit() void {
+    var obj = vm.objects;
+    while (obj != null) {
+        var next = obj.?.next;
+        cleanObj(obj.?);
+        destroyObj(obj.?);
+        obj = next;
+    }
+}
 
 pub fn interpret(source_code: []const u8) !void {
-    std.debug.assert(vm.value_stack.top == 0);
-    defer std.debug.assert(vm.value_stack.top == 0);
-    errdefer vm.value_stack.top = 0;
+    std.debug.assert(vm.stack.top == 0);
+    defer std.debug.assert(vm.stack.top == 0);
+    errdefer vm.stack.top = 0;
 
     var chunk = try compile(vm.allocator, source_code);
     defer chunk.deinit();
@@ -66,22 +116,96 @@ fn readConstant() Value {
     return vm.chunk.constants.items[readByte()];
 }
 
-fn binaryOp(comptime T: type, comptime op: fn (f64, f64) T) !void {
-    if (vm.peek(0) != .number or vm.peek(1) != .number) {
-        try runtimeError("Operands must be numbers.", .{});
-        return InterpretError.Runtime;
-    }
+fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
+    const Dispatcher = struct {
+        const CheckFn = fn (Value.Type, Value.Type) bool;
+        const ExecuteFn = fn (Value, Value) Op.Error!Value;
 
-    const b = vm.value_stack.pop().number;
-    const a = vm.value_stack.pop().number;
+        check: CheckFn,
+        execute: ExecuteFn,
 
-    const result = switch (T) {
-        f64 => Value{ .number = op(a, b) },
-        bool => Value{ .boolean = op(a, b) },
-        else => @compileError("Cannot handle type."),
+        fn makeCheck(comptime Ta: type, comptime Tb: type) CheckFn {
+            const Closure = struct {
+                fn check(a: Value.Type, b: Value.Type) bool {
+                    switch (Ta) {
+                        f64 => if (a != .number) return false,
+                        bool => if (a != .boolean) return false,
+                        []const u8 => if (a != .string) return false,
+                        else => unreachable,
+                    }
+
+                    switch (Tb) {
+                        f64 => return b == .number,
+                        bool => return b == .boolean,
+                        []const u8 => return b == .string,
+                        else => unreachable,
+                    }
+                }
+            };
+
+            return Closure.check;
+        }
+
+        fn makeExecute(comptime op: anytype, comptime Ta: type, comptime Tb: type, comptime R: type) ExecuteFn {
+            const Closure = struct {
+                fn execute(a: Value, b: Value) Op.Error!Value {
+                    const a_inner = a.cast(Ta).?;
+                    const b_inner = b.cast(Tb).?;
+
+                    switch (R) {
+                        f64 => return Value{ .number = try op(a_inner, b_inner) },
+                        bool => return Value{ .boolean = try op(a_inner, b_inner) },
+                        []const u8 => {
+                            var obj = try createObj(vl.String);
+                            obj.chars = try op(a_inner, b_inner);
+
+                            return Value{ .obj = &obj.base };
+                        },
+                        else => unreachable,
+                    }
+                }
+            };
+
+            return Closure.execute;
+        }
     };
 
-    vm.value_stack.push(result);
+    const ops_info = @typeInfo(@TypeOf(ops)).Struct;
+
+    const dispatchers = blk: {
+        var disps: [ops_info.fields.len]Dispatcher = undefined;
+        inline for (ops) |op, i| {
+            const fn_info = @typeInfo(@TypeOf(op)).Fn;
+            const args = fn_info.args;
+
+            const Ta = args[0].arg_type.?;
+            const Tb = args[1].arg_type.?;
+            const R = @typeInfo(fn_info.return_type.?).ErrorUnion.payload;
+
+            disps[i] = .{
+                .check = Dispatcher.makeCheck(Ta, Tb),
+                .execute = Dispatcher.makeExecute(op, Ta, Tb, R),
+            };
+        }
+        break :blk disps;
+    };
+
+    const b = vm.stack.pop();
+    const a = vm.stack.pop();
+
+    for (dispatchers) |d| {
+        if (d.check(a.ty(), b.ty())) {
+            vm.stack.push(try d.execute(a, b));
+            return;
+        }
+    }
+
+    try runtimeError("Binary operator '{}' not supported for types '{}' and '{}'", .{
+        op_name,
+        a.ty(),
+        b.ty(),
+    });
+    return InterpretError.Runtime;
 }
 
 fn run() !void {
@@ -90,7 +214,7 @@ fn run() !void {
     while (true) {
         var next_ip: usize = undefined;
         if (debug.trace_execution) {
-            const stack_values = vm.value_stack.buffer[0..vm.value_stack.top];
+            const stack_values = vm.stack.buffer[0..vm.stack.top];
             try debug.dumpValueStack(stdout, stack_values);
             next_ip = try debug.disassembleInstruction(stdout, vm.chunk, vm.ip);
         }
@@ -98,51 +222,51 @@ fn run() !void {
         const instruction = @intToEnum(OpCode, readByte());
         switch (instruction) {
             .return_ => return,
-            .pop => _ = vm.value_stack.pop(),
+            .pop => _ = vm.stack.pop(),
             .print => {
-                const v = vm.peek(0);
+                const v = vm.stack.peek(0);
                 try stdout.print("{}\n", .{v});
             },
             .constant => {
                 const v = readConstant();
-                vm.value_stack.push(v);
+                vm.stack.push(v);
             },
             .negate => {
-                if (vm.peek(0) != .number) {
+                if (vm.stack.peek(0) != .number) {
                     try runtimeError("Operand must be a number", .{});
                     return InterpretError.Runtime;
                 }
 
-                var operand = vm.value_stack.pop().number;
+                var operand = vm.stack.pop().number;
                 var result = Value{ .number = -operand };
-                vm.value_stack.push(result);
+                vm.stack.push(result);
             },
             .not => {
-                var operand = vm.value_stack.pop();
+                var operand = vm.stack.pop();
                 var result = Value{ .boolean = isFalsey(operand) };
-                vm.value_stack.push(result);
+                vm.stack.push(result);
             },
-            .false_ => vm.value_stack.push(Value{ .boolean = false }),
-            .true_ => vm.value_stack.push(Value{ .boolean = true }),
-            .nil => vm.value_stack.push(Value.nil),
-            .add => try binaryOp(f64, add),
-            .subtract => try binaryOp(f64, subtract),
-            .multiply => try binaryOp(f64, multiply),
-            .divide => try binaryOp(f64, divide),
+            .false_ => vm.stack.push(Value{ .boolean = false }),
+            .true_ => vm.stack.push(Value{ .boolean = true }),
+            .nil => vm.stack.push(Value.nil),
+            .add => try binaryOp(.{ Op.add, Op.concat }, "+"),
+            .subtract => try binaryOp(.{Op.subtract}, "-"),
+            .multiply => try binaryOp(.{Op.multiply}, "*"),
+            .divide => try binaryOp(.{Op.divide}, "/"),
             .equal => {
-                var b = vm.value_stack.pop();
-                var a = vm.value_stack.pop();
-                vm.value_stack.push(Value{ .boolean = value.equal(a, b) });
+                var b = vm.stack.pop();
+                var a = vm.stack.pop();
+                vm.stack.push(Value{ .boolean = vl.equal(a, b) });
             },
             .not_equal => {
-                var b = vm.value_stack.pop();
-                var a = vm.value_stack.pop();
-                vm.value_stack.push(Value{ .boolean = !value.equal(a, b) });
+                var b = vm.stack.pop();
+                var a = vm.stack.pop();
+                vm.stack.push(Value{ .boolean = !vl.equal(a, b) });
             },
-            .greater => try binaryOp(bool, greater),
-            .greater_equal => try binaryOp(bool, greaterEqual),
-            .less => try binaryOp(bool, less),
-            .less_equal => try binaryOp(bool, lessEqual),
+            .greater => try binaryOp(.{Op.greater}, ">"),
+            .greater_equal => try binaryOp(.{Op.greaterEqual}, ">="),
+            .less => try binaryOp(.{Op.less}, "<"),
+            .less_equal => try binaryOp(.{Op.lessEqual}, "<="),
         }
 
         if (debug.trace_execution) {
@@ -167,34 +291,46 @@ fn isFalsey(a: Value) bool {
     }
 }
 
-fn add(a: f64, b: f64) f64 {
-    return a + b;
-}
+const Op = struct {
+    const Error = error{OutOfMemory};
 
-fn subtract(a: f64, b: f64) f64 {
-    return a - b;
-}
+    fn concat(a: []const u8, b: []const u8) Error![]const u8 {
+        return try std.mem.concat(
+            vm.allocator,
+            u8,
+            &[_][]const u8{ a, b },
+        );
+    }
 
-fn multiply(a: f64, b: f64) f64 {
-    return a * b;
-}
+    fn add(a: f64, b: f64) Error!f64 {
+        return a + b;
+    }
 
-fn divide(a: f64, b: f64) f64 {
-    return a / b;
-}
+    fn subtract(a: f64, b: f64) Error!f64 {
+        return a - b;
+    }
 
-fn greater(a: f64, b: f64) bool {
-    return a > b;
-}
+    fn multiply(a: f64, b: f64) Error!f64 {
+        return a * b;
+    }
 
-fn less(a: f64, b: f64) bool {
-    return a < b;
-}
+    fn divide(a: f64, b: f64) Error!f64 {
+        return a / b;
+    }
 
-fn greaterEqual(a: f64, b: f64) bool {
-    return a >= b;
-}
+    fn greater(a: f64, b: f64) Error!bool {
+        return a > b;
+    }
 
-fn lessEqual(a: f64, b: f64) bool {
-    return a <= b;
-}
+    fn less(a: f64, b: f64) Error!bool {
+        return a < b;
+    }
+
+    fn greaterEqual(a: f64, b: f64) Error!bool {
+        return a >= b;
+    }
+
+    fn lessEqual(a: f64, b: f64) Error!bool {
+        return a <= b;
+    }
+};

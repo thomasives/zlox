@@ -10,29 +10,31 @@ const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 
 pub fn main() anyerror!void {
-    const gpa = std.testing.allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = &gpa.allocator;
 
-    try vm.init(gpa);
+    try vm.init(allocator);
     defer vm.deinit();
 
     var arg_it = process.args();
 
-    const exe_name = try arg_it.next(gpa).?;
-    defer gpa.free(exe_name);
+    const exe_name = try arg_it.next(allocator).?;
+    defer allocator.free(exe_name);
 
-    const path_arg = arg_it.next(gpa);
+    const path_arg = arg_it.next(allocator);
     if (path_arg == null) {
-        try repl(gpa);
+        try repl(allocator);
     } else {
         const path = try path_arg.?;
-        defer gpa.free(path);
+        defer allocator.free(path);
 
         if (arg_it.skip()) {
             std.debug.warn("Usage:\n    {} [path]\n", .{exe_name});
             return error.InvalidArgs;
         }
 
-        try runFile(gpa, path);
+        try runFile(allocator, path);
     }
 }
 
@@ -50,6 +52,10 @@ fn repl(gpa: *Allocator) !void {
             _ = try stdout.write("\n");
             return e;
         };
+
+        if (std.mem.eql(u8, line_buffer.items, "exit")) {
+            return;
+        }
 
         vm.interpret(line_buffer.items) catch |e| {
             if (e == vm.InterpretError.Compilation) {

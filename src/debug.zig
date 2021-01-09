@@ -5,7 +5,7 @@ const Chunk = @import("chunk.zig").Chunk;
 const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
-pub const trace_execution = true;
+pub const trace_execution = false;
 pub const print_code = false;
 
 fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {

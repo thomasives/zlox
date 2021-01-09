@@ -13,4 +13,6 @@ Using zig version 0.7.1.
 - [x] Chapter 16 Scanning on Demand
 - [x] Chapter 17 Compiling Expressions
 - [x] Chapter 18 Types of Values
-- [ ] Chapter 19 Strings
+- [x] Chapter 19 Strings
+- [ ] Chapter 20 Hash Tables
+

@@ -9,20 +9,24 @@ pub fn Stack(comptime T: type, comptime capacity: usize) type {
 
         pub fn push(self: *Self, item: T) void {
             std.debug.assert(self.buffer.len > self.top);
-            
+
             self.buffer[self.top] = item;
             self.top += 1;
         }
-        
+
         pub fn pop(self: *Self) T {
             std.debug.assert(self.top > 0);
 
             self.top -= 1;
             return self.buffer[self.top];
         }
-        
+
         pub fn reset(self: *Self) void {
             self.top = 0;
+        }
+
+        pub fn peek(self: *Self, distance: usize) T {
+            return self.buffer[self.top - 1 - distance];
         }
     };
 }
@@ -48,7 +52,7 @@ test "stack pop" {
     stack.push(5);
     stack.push(6);
     stack.push(7);
-    
+
     expect(stack.pop() == 7);
     expect(stack.pop() == 6);
     expect(stack.pop() == 5);
