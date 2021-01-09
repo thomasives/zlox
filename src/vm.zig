@@ -28,6 +28,7 @@ const Vm = struct {
     const Self = @This();
 
     pub const Stack = stack.Stack(Value, 256);
+    pub const Internment = std.StringHashMap(*Obj);
 
     allocator: *std.mem.Allocator,
 
@@ -39,6 +40,8 @@ const Vm = struct {
     stack: Stack,
     /// Linked list of objects
     objects: ?*Obj,
+    /// Internment camp for all the strings in the lox program
+    strings: Internment,
 };
 
 var vm: Vm = undefined;
@@ -56,6 +59,28 @@ pub fn createObj(comptime T: type) !*T {
     return ptr;
 }
 
+pub fn createString(chars: []const u8) !*Obj {
+    var interned = vm.strings.get(chars);
+
+    if (interned != null) {
+        return interned.?;
+    } else {
+        var duped = try vm.allocator.dupe(u8, chars);
+        errdefer vm.allocator.free(duped);
+
+        var obj = try createStringNoDupe(duped);
+        try vm.strings.putNoClobber(duped, obj);
+
+        return obj;
+    }
+}
+
+fn createStringNoDupe(chars: []const u8) !*Obj {
+    var obj = try createObj(vl.String);
+    obj.chars = chars;
+    return &obj.base;
+}
+
 /// Free an object managed by the VM
 pub fn destroyObj(obj: *Obj) void {
     switch (obj.ty) {
@@ -67,7 +92,7 @@ pub fn destroyObj(obj: *Obj) void {
 }
 
 /// Free the allocated memebers of a managed object
-pub fn cleanObj(obj: *Obj) void {
+pub fn deallocateObj(obj: *Obj) void {
     switch (obj.ty) {
         .string => {
             const string = obj.cast(vl.String).?;
@@ -80,13 +105,15 @@ pub fn init(allocator: *Allocator) !void {
     vm.allocator = allocator;
     vm.stack = .{};
     vm.objects = null;
+    vm.strings = Vm.Internment.init(allocator);
 }
 
 pub fn deinit() void {
+    vm.strings.deinit();
     var obj = vm.objects;
     while (obj != null) {
         var next = obj.?.next;
-        cleanObj(obj.?);
+        deallocateObj(obj.?);
         destroyObj(obj.?);
         obj = next;
     }
@@ -156,10 +183,19 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
                         f64 => return Value{ .number = try op(a_inner, b_inner) },
                         bool => return Value{ .boolean = try op(a_inner, b_inner) },
                         []const u8 => {
-                            var obj = try createObj(vl.String);
-                            obj.chars = try op(a_inner, b_inner);
+                            const chars = try op(a_inner, b_inner);
+                            errdefer vm.allocator.free(chars);
 
-                            return Value{ .obj = &obj.base };
+                            var interned = vm.strings.get(chars);
+                            if (interned != null) {
+                                vm.allocator.free(chars);
+                                return Value{ .obj = interned.? };
+                            } else {
+                                var obj = try createStringNoDupe(chars);
+                                try vm.strings.putNoClobber(chars, obj);
+
+                                return Value{ .obj = obj };
+                            }
                         },
                         else => unreachable,
                     }

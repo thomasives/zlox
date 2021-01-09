@@ -14,5 +14,6 @@ Using zig version 0.7.1.
 - [x] Chapter 17 Compiling Expressions
 - [x] Chapter 18 Types of Values
 - [x] Chapter 19 Strings
-- [ ] Chapter 20 Hash Tables
+- [x] Chapter 20 Hash Tables
+- [ ] Chapter 21 Global Variables
 

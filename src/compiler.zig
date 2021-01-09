@@ -190,11 +190,10 @@ fn number() ParseError!void {
 fn string() ParseError!void {
     const allocator = vm.getAllocator();
 
-    var obj = try vm.createObj(vl.String);
     const len = parser.previous.span.len;
-    obj.chars = try allocator.dupe(u8, parser.previous.span[1 .. len - 1]);
+    var obj = try vm.createString(parser.previous.span[1 .. len - 1]);
 
-    try emitOpByte(.constant, try makeConstant(Value{ .obj = &obj.base }));
+    try emitOpByte(.constant, try makeConstant(Value{ .obj = obj }));
 }
 
 fn grouping() ParseError!void {
