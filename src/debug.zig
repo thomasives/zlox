@@ -5,11 +5,8 @@ const Chunk = @import("chunk.zig").Chunk;
 const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
-pub const trace_execution = false;
+pub const trace_execution = true;
 pub const print_code = false;
-
-// XXX(tri): @Investigate Is there a better way of passing the writer object
-// rather than using anytype?  
 
 fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
     try writer.print("{:<16}\n", .{name});
@@ -20,7 +17,7 @@ fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
 fn constantInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name: []const u8) !usize {
     const index = chunk.code.items[offset + 1];
 
-    try writer.print("{:<16} {x:0<2} '{}'\n", .{ name, index, chunk.constants.items[index]});
+    try writer.print("{:<16} {x:0<2} '{}'\n", .{ name, index, chunk.constants.items[index] });
 
     return offset + 2;
 }
@@ -29,25 +26,25 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
     const op: OpCode = @intToEnum(OpCode, chunk.code.items[offset]);
 
     switch (op) {
-        .op_return => return try simpleInstruction(writer, offset, "OP_RETURN"),
-        .op_pop => return try simpleInstruction(writer, offset, "OP_POP"),
-        .op_constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
-        .op_print => return try simpleInstruction(writer, offset, "OP_PRINT"),
-        .op_negate => return try simpleInstruction(writer, offset, "OP_NEGATE"),
-        .op_add => return try simpleInstruction(writer, offset, "OP_ADD"),
-        .op_subtract => return try simpleInstruction(writer, offset, "OP_SUBTRACT"),
-        .op_multiply => return try simpleInstruction(writer, offset, "OP_MULTIPLY"),
-        .op_divide => return try simpleInstruction(writer, offset, "OP_DIVIDE"),
-        .op_false => return try simpleInstruction(writer, offset, "OP_FALSE"),
-        .op_true => return try simpleInstruction(writer, offset, "OP_TRUE"),
-        .op_nil => return try simpleInstruction(writer, offset, "OP_NIL"),
-        .op_not => return try simpleInstruction(writer, offset, "OP_NOT"),
-        .op_equal => return try simpleInstruction(writer, offset, "OP_EQUAL"),
-        .op_not_equal => return try simpleInstruction(writer, offset, "OP_NOT_EQUAL"),
-        .op_less => return try simpleInstruction(writer, offset, "OP_LESS"),
-        .op_less_equal => return try simpleInstruction(writer, offset, "OP_LESS_EQUAL"),
-        .op_greater => return try simpleInstruction(writer, offset, "OP_GREATER"),
-        .op_greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
+        .return_ => return try simpleInstruction(writer, offset, "OP_RETURN"),
+        .pop => return try simpleInstruction(writer, offset, "OP_POP"),
+        .constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
+        .print => return try simpleInstruction(writer, offset, "OP_PRINT"),
+        .negate => return try simpleInstruction(writer, offset, "OP_NEGATE"),
+        .add => return try simpleInstruction(writer, offset, "OP_ADD"),
+        .subtract => return try simpleInstruction(writer, offset, "OP_SUBTRACT"),
+        .multiply => return try simpleInstruction(writer, offset, "OP_MULTIPLY"),
+        .divide => return try simpleInstruction(writer, offset, "OP_DIVIDE"),
+        .false_ => return try simpleInstruction(writer, offset, "OP_FALSE"),
+        .true_ => return try simpleInstruction(writer, offset, "OP_TRUE"),
+        .nil => return try simpleInstruction(writer, offset, "OP_NIL"),
+        .not => return try simpleInstruction(writer, offset, "OP_NOT"),
+        .equal => return try simpleInstruction(writer, offset, "OP_EQUAL"),
+        .not_equal => return try simpleInstruction(writer, offset, "OP_NOT_EQUAL"),
+        .less => return try simpleInstruction(writer, offset, "OP_LESS"),
+        .less_equal => return try simpleInstruction(writer, offset, "OP_LESS_EQUAL"),
+        .greater => return try simpleInstruction(writer, offset, "OP_GREATER"),
+        .greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
     }
 }
 
@@ -75,11 +72,10 @@ pub fn disassembleChunk(writer: anytype, chunk: *const Chunk, name: []const u8) 
 pub fn dumpValueStack(writer: anytype, stack: []value.Value) !void {
     _ = try writer.write("    ");
     for (stack) |v| {
-        try writer.print("[ {} ]", .{ v });
+        try writer.print("[ {} ]", .{v});
     }
     _ = try writer.write("\n");
 }
-
 
 fn expectLine(buffer: []const u8, expected: []const u8) usize {
     const expect = std.testing.expect;
@@ -88,7 +84,7 @@ fn expectLine(buffer: []const u8, expected: []const u8) usize {
     const search_result = std.mem.indexOf(u8, buffer, "\n");
     expect(search_result != null);
     const line_end = search_result.?;
-    
+
     expect(eql(u8, buffer[0..line_end], expected));
 
     return line_end + 1;
@@ -99,11 +95,11 @@ test "disassembleChunk op_return" {
     defer chunk.deinit();
 
     try chunk.writeOp(OpCode.op_return, 0);
-    
-    var buffer: [64]u8 = undefined; 
+
+    var buffer: [64]u8 = undefined;
     var writer = std.io.fixedBufferStream(&buffer).writer();
     try disassembleChunk(writer, &chunk, "test chunk");
-    
+
     var line_start: usize = 0;
     line_start += expectLine(buffer[line_start..], "== test chunk ==");
     line_start += expectLine(buffer[line_start..], "0000    0  OP_RETURN       ");
@@ -116,15 +112,14 @@ test "disassembleChunk op_constant" {
     const index = try chunk.addConstant(1.2);
     try chunk.writeOp(OpCode.op_constant, 0);
     try chunk.write(index, 0);
-    
-    var buffer: [64]u8 = undefined; 
+
+    var buffer: [64]u8 = undefined;
     var writer = std.io.fixedBufferStream(&buffer).writer();
     try disassembleChunk(writer, &chunk, "test chunk");
-    
+
     var line_start: usize = 0;
     line_start += expectLine(buffer[line_start..], "== test chunk ==");
     line_start += expectLine(buffer[line_start..], "0000    0  OP_CONSTANT      00 '1.2'");
-
 }
 
 test "disassembleChunk line numbers" {
@@ -137,11 +132,11 @@ test "disassembleChunk line numbers" {
     try chunk.writeOp(OpCode.op_return, 1);
     try chunk.writeOp(OpCode.op_return, 1);
     try chunk.writeOp(OpCode.op_return, 2);
-    
-    var buffer: [256]u8 = undefined; 
+
+    var buffer: [256]u8 = undefined;
     var writer = std.io.fixedBufferStream(&buffer).writer();
     try disassembleChunk(writer, &chunk, "test chunk");
-    
+
     var line_start: usize = 0;
     line_start += expect_line(buffer[line_start..], "== test chunk ==");
     line_start += expect_line(buffer[line_start..], "0000    0  OP_RETURN       ");
