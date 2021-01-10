@@ -28,6 +28,15 @@ pub const Value = union(enum) {
         boolean,
         nil,
         string,
+
+        pub fn format(self: Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            switch (self) {
+                .number => try writer.print("{}", .{"number"}),
+                .boolean => try writer.print("{}", .{"bool"}),
+                .nil => try writer.print("{}", .{"nil"}),
+                .string => try writer.print("{}", .{"string"}),
+            }
+        }
     };
 
     pub fn ty(self: Value) Type {

@@ -32,13 +32,14 @@ const Precedence = enum(u8) {
     call,
     primary,
 };
-const ParseFn = fn () ParseError!void;
+const PrefixFn = fn (bool) ParseError!void;
+const InfixFn = fn () ParseError!void;
 
 const ParseError = anyerror;
 
 const ParseRule = struct {
-    prefix: ?ParseFn,
-    infix: ?ParseFn,
+    prefix: ?PrefixFn,
+    infix: ?InfixFn,
     precedence: Precedence,
 };
 
@@ -120,6 +121,8 @@ const rules_table = blk: {
         .precedence = .comparison,
     };
 
+    table[@enumToInt(TokenTag.identifier)].prefix = variable;
+
     break :blk table;
 };
 
@@ -139,14 +142,15 @@ pub fn compile(allocator: *Allocator, source_code: []const u8) !Chunk {
     parser.panicMode = false;
 
     try advance();
-    try expression();
-    try consume(.eof, "Expect end of expression.");
+    while (!try match(.eof)) {
+        try declaration();
+    }
+
+    try endCompiler();
 
     if (parser.hadError) {
         return vm.InterpretError.Compilation;
     }
-
-    try endCompiler();
 
     return compiling_chunk;
 }
@@ -159,7 +163,8 @@ fn parsePrecedence(prec: Precedence) ParseError!void {
         return;
     }
 
-    try prefixFn.?();
+    const can_assign = @enumToInt(prec) <= @enumToInt(Precedence.assignment);
+    try prefixFn.?(can_assign);
 
     while (@enumToInt(prec) <= @enumToInt(getRule(parser.current.tag).precedence)) {
         try advance();
@@ -168,11 +173,63 @@ fn parsePrecedence(prec: Precedence) ParseError!void {
     }
 }
 
+fn declaration() ParseError!void {
+    if (try match(.var_)) {
+        try varDeclaration();
+    } else {
+        try statement();
+    }
+
+    if (parser.panicMode) try synchronize();
+}
+
+fn varDeclaration() ParseError!void {
+    var global = try parseVariable("Expected variable name.");
+
+    if (try match(.equal)) {
+        try expression();
+    } else {
+        try emitOp(.nil);
+    }
+    try consume(.semicolon, "Expect ';' after variable declaration.");
+
+    try defineVariable(global);
+}
+
+fn parseVariable(errorMessage: []const u8) ParseError!u8 {
+    try consume(.identifier, errorMessage);
+    return identifierConstant(&parser.previous);
+}
+
+fn defineVariable(global: u8) ParseError!void {
+    try emitOpByte(.define_global, global);
+}
+
+fn statement() ParseError!void {
+    if (try match(.print)) {
+        try printStatement();
+    } else {
+        try expressionStatement();
+    }
+}
+
+fn printStatement() ParseError!void {
+    try expression();
+    try consume(.semicolon, "Expect ';' after value.");
+    try emitOp(.print);
+}
+
+fn expressionStatement() ParseError!void {
+    try expression();
+    try consume(.semicolon, "Expect ';' after expression.");
+    try emitOp(.pop);
+}
+
 fn expression() ParseError!void {
     try parsePrecedence(.assignment);
 }
 
-fn literal() ParseError!void {
+fn literal(can_assign: bool) ParseError!void {
     switch (parser.previous.tag) {
         .false_ => try emitOp(.false_),
         .true_ => try emitOp(.true_),
@@ -181,13 +238,13 @@ fn literal() ParseError!void {
     }
 }
 
-fn number() ParseError!void {
+fn number(can_assign: bool) ParseError!void {
     const num = try std.fmt.parseFloat(f64, parser.previous.span);
     const val = Value{ .number = num };
     try emitOpByte(.constant, try makeConstant(val));
 }
 
-fn string() ParseError!void {
+fn string(can_assign: bool) ParseError!void {
     const allocator = vm.getAllocator();
 
     const len = parser.previous.span.len;
@@ -196,12 +253,12 @@ fn string() ParseError!void {
     try emitOpByte(.constant, try makeConstant(Value{ .obj = obj }));
 }
 
-fn grouping() ParseError!void {
+fn grouping(can_assign: bool) ParseError!void {
     try expression();
     try consume(.right_paren, "Expected ')' after expression.");
 }
 
-fn unary() ParseError!void {
+fn unary(can_assign: bool) ParseError!void {
     const tag = parser.previous.tag;
 
     try parsePrecedence(.unary);
@@ -234,9 +291,17 @@ fn binary() ParseError!void {
     }
 }
 
+fn variable(can_assign: bool) ParseError!void {
+    const arg = try identifierConstant(&parser.previous);
+    if (can_assign and try match(.equal)) {
+        try expression();
+        try emitOpByte(.set_global, arg);
+    } else {
+        try emitOpByte(.get_global, arg);
+    }
+}
+
 fn endCompiler() !void {
-    try emitOp(.print);
-    try emitOp(.pop);
     try emitOp(.return_);
 
     if (debug.print_code) {
@@ -258,6 +323,10 @@ fn makeConstant(val: Value) !u8 {
     return @intCast(u8, index);
 }
 
+fn identifierConstant(name: *const scanner.Token) !u8 {
+    return try makeConstant(Value{ .obj = try vm.createString(name.span) });
+}
+
 fn advance() ParseError!void {
     parser.previous = parser.current;
 
@@ -267,6 +336,16 @@ fn advance() ParseError!void {
 
         try errorAtCurrent(parser.current.span);
     }
+}
+
+fn match(tag: scanner.TokenTag) ParseError!bool {
+    if (!check(tag)) return false;
+    try advance();
+    return true;
+}
+
+fn check(tag: scanner.TokenTag) bool {
+    return parser.current.tag == tag;
 }
 
 fn consume(expected: scanner.TokenTag, error_message: []const u8) !void {
@@ -313,4 +392,19 @@ fn errorAt(token: scanner.Token, message: []const u8) ParseError!void {
 
     try stderr.print(": {}\n", .{message});
     parser.hadError = true;
+}
+
+fn synchronize() ParseError!void {
+    parser.panicMode = false;
+
+    while (parser.current.tag != .eof) {
+        if (parser.previous.tag == .semicolon) return;
+
+        switch (parser.current.tag) {
+            .class, .fun, .var_, .for_, .if_, .while_, .print, .return_ => return,
+            else => {},
+        }
+
+        try advance();
+    }
 }

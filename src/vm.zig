@@ -8,11 +8,13 @@ const OpCode = @import("chunk.zig").OpCode;
 const Chunk = @import("chunk.zig").Chunk;
 const Value = vl.Value;
 const Obj = vl.Obj;
+const String = vl.String;
 const Allocator = std.mem.Allocator;
 
 const compile = @import("compiler.zig").compile;
 
 // TODO remove me
+// I think we possibly want an "ObjStore" object to manage this stuff
 pub fn getAllocator() *Allocator {
     return vm.allocator;
 }
@@ -29,6 +31,7 @@ const Vm = struct {
 
     pub const Stack = stack.Stack(Value, 256);
     pub const Internment = std.StringHashMap(*Obj);
+    pub const Globals = std.AutoHashMap(*String, Value);
 
     allocator: *std.mem.Allocator,
 
@@ -38,6 +41,9 @@ const Vm = struct {
     ip: usize,
     /// Runtime stack of values
     stack: Stack,
+    /// Global variables
+    globals: Globals,
+
     /// Linked list of objects
     objects: ?*Obj,
     /// Internment camp for all the strings in the lox program
@@ -76,7 +82,7 @@ pub fn createString(chars: []const u8) !*Obj {
 }
 
 fn createStringNoDupe(chars: []const u8) !*Obj {
-    var obj = try createObj(vl.String);
+    var obj = try createObj(String);
     obj.chars = chars;
     return &obj.base;
 }
@@ -85,7 +91,7 @@ fn createStringNoDupe(chars: []const u8) !*Obj {
 pub fn destroyObj(obj: *Obj) void {
     switch (obj.ty) {
         .string => {
-            const string = obj.cast(vl.String).?;
+            const string = obj.cast(String).?;
             vm.allocator.destroy(obj);
         },
     }
@@ -95,7 +101,7 @@ pub fn destroyObj(obj: *Obj) void {
 pub fn deallocateObj(obj: *Obj) void {
     switch (obj.ty) {
         .string => {
-            const string = obj.cast(vl.String).?;
+            const string = obj.cast(String).?;
             vm.allocator.free(string.chars);
         },
     }
@@ -106,10 +112,12 @@ pub fn init(allocator: *Allocator) !void {
     vm.stack = .{};
     vm.objects = null;
     vm.strings = Vm.Internment.init(allocator);
+    vm.globals = Vm.Globals.init(allocator);
 }
 
 pub fn deinit() void {
     vm.strings.deinit();
+    vm.globals.deinit();
     var obj = vm.objects;
     while (obj != null) {
         var next = obj.?.next;
@@ -260,12 +268,36 @@ fn run() !void {
             .return_ => return,
             .pop => _ = vm.stack.pop(),
             .print => {
-                const v = vm.stack.peek(0);
+                const v = vm.stack.pop();
                 try stdout.print("{}\n", .{v});
             },
             .constant => {
                 const v = readConstant();
                 vm.stack.push(v);
+            },
+            .define_global => {
+                const name = readConstant().cast(*String).?;
+                try vm.globals.put(name, vm.stack.pop());
+            },
+            .get_global => {
+                const name = readConstant().cast(*String).?;
+                const value = vm.globals.get(name);
+                if (value) |v| {
+                    vm.stack.push(v);
+                } else {
+                    try runtimeError("Undefined variable '{}'", .{name.chars});
+                    return InterpretError.Runtime;
+                }
+            },
+            .set_global => {
+                const name = readConstant().cast(*String).?;
+                const entry = vm.globals.getEntry(name);
+                if (entry) |e| {
+                    e.value = vm.stack.peek(0);
+                } else {
+                    try runtimeError("Undefined variable '{}'", .{name.chars});
+                    return InterpretError.Runtime;
+                }
             },
             .negate => {
                 if (vm.stack.peek(0) != .number) {

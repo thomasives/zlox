@@ -15,5 +15,6 @@ Using zig version 0.7.1.
 - [x] Chapter 18 Types of Values
 - [x] Chapter 19 Strings
 - [x] Chapter 20 Hash Tables
-- [ ] Chapter 21 Global Variables
+- [x] Chapter 21 Global Variables
+- [ ] Chapter 22 Local Variables
 

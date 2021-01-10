@@ -6,7 +6,7 @@ const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
 pub const trace_execution = false;
-pub const print_code = false;
+pub const print_code = true;
 
 fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
     try writer.print("{:<16}\n", .{name});
@@ -45,6 +45,9 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
         .less_equal => return try simpleInstruction(writer, offset, "OP_LESS_EQUAL"),
         .greater => return try simpleInstruction(writer, offset, "OP_GREATER"),
         .greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
+        .define_global => return constantInstruction(writer, chunk, offset, "OP_DEFINE_GLOBAL"),
+        .get_global => return constantInstruction(writer, chunk, offset, "OP_GET_GLOBAL"),
+        .set_global => return constantInstruction(writer, chunk, offset, "OP_SET_GLOBAL"),
     }
 }
 

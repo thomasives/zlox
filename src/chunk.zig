@@ -5,6 +5,9 @@ const Value = @import("value.zig").Value;
 /// One byte op codes for the instructions used in our
 /// bytecode interpreter.
 pub const OpCode = enum(u8) {
+    define_global,
+    get_global,
+    set_global,
     constant,
     pop,
     print,
