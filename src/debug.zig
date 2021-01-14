@@ -17,7 +17,15 @@ fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
 fn constantInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name: []const u8) !usize {
     const index = chunk.code.items[offset + 1];
 
-    try writer.print("{:<16} {x:0<2} '{}'\n", .{ name, index, chunk.constants.items[index] });
+    try writer.print("{:<16} {x:0>2} '{}'\n", .{ name, index, chunk.constants.items[index] });
+
+    return offset + 2;
+}
+
+fn byteInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name: []const u8) !usize {
+    const slot = chunk.code.items[offset + 1];
+
+    try writer.print("{:<16} {x:0>2}\n", .{ name, slot });
 
     return offset + 2;
 }
@@ -47,7 +55,9 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
         .greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
         .define_global => return constantInstruction(writer, chunk, offset, "OP_DEFINE_GLOBAL"),
         .get_global => return constantInstruction(writer, chunk, offset, "OP_GET_GLOBAL"),
+        .get_local => return byteInstruction(writer, chunk, offset, "OP_GET_LOCAL"),
         .set_global => return constantInstruction(writer, chunk, offset, "OP_SET_GLOBAL"),
+        .set_local => return byteInstruction(writer, chunk, offset, "OP_SET_LOCAL"),
     }
 }
 

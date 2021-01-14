@@ -279,6 +279,10 @@ fn run() !void {
                 const name = readConstant().cast(*String).?;
                 try vm.globals.put(name, vm.stack.pop());
             },
+            .get_local => {
+                const slot = readByte();
+                vm.stack.push(vm.stack.buffer[slot]);
+            },
             .get_global => {
                 const name = readConstant().cast(*String).?;
                 const value = vm.globals.get(name);
@@ -289,18 +293,22 @@ fn run() !void {
                     return InterpretError.Runtime;
                 }
             },
+            .set_local => {
+                const slot = readByte();
+                vm.stack.buffer[slot] = vm.stack.peek(0).*;
+            },
             .set_global => {
                 const name = readConstant().cast(*String).?;
                 const entry = vm.globals.getEntry(name);
                 if (entry) |e| {
-                    e.value = vm.stack.peek(0);
+                    e.value = vm.stack.peek(0).*;
                 } else {
                     try runtimeError("Undefined variable '{}'", .{name.chars});
                     return InterpretError.Runtime;
                 }
             },
             .negate => {
-                if (vm.stack.peek(0) != .number) {
+                if (vm.stack.peek(0).* != .number) {
                     try runtimeError("Operand must be a number", .{});
                     return InterpretError.Runtime;
                 }

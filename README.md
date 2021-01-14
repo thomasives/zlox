@@ -16,5 +16,5 @@ Using zig version 0.7.1.
 - [x] Chapter 19 Strings
 - [x] Chapter 20 Hash Tables
 - [x] Chapter 21 Global Variables
-- [ ] Chapter 22 Local Variables
-
+- [x] Chapter 22 Local Variables
+- [ ] Chapter 23 Jumping Back and Forth

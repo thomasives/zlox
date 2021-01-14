@@ -6,6 +6,7 @@ const debug = @import("debug.zig");
 const vl = @import("value.zig");
 
 const Allocator = std.mem.Allocator;
+const Stack = @import("stack.zig").Stack;
 const Chunk = @import("chunk.zig").Chunk;
 const OpCode = @import("chunk.zig").OpCode;
 const Token = scanner.Token;
@@ -17,6 +18,17 @@ const Parser = struct {
     previous: Token = undefined,
     hadError: bool = false,
     panicMode: bool = false,
+};
+
+const Compiler = struct {
+    const Local = struct {
+        name: Token,
+        depth: i64,
+    };
+    const Locals = Stack(Local, std.math.maxInt(u8) + 1);
+
+    locals: Locals = .{},
+    scope_depth: i64 = 0,
 };
 
 const Precedence = enum(u8) {
@@ -131,12 +143,15 @@ fn getRule(tag: TokenTag) *const ParseRule {
 }
 
 var parser = Parser{};
+var current: *Compiler = undefined;
 var compiling_chunk: Chunk = undefined;
 
 pub fn compile(allocator: *Allocator, source_code: []const u8) !Chunk {
     scanner.init(source_code);
     compiling_chunk = Chunk.init(allocator);
     errdefer compiling_chunk.deinit();
+    var compiler = Compiler{};
+    current = &compiler;
 
     parser.hadError = false;
     parser.panicMode = false;
@@ -198,18 +213,92 @@ fn varDeclaration() ParseError!void {
 
 fn parseVariable(errorMessage: []const u8) ParseError!u8 {
     try consume(.identifier, errorMessage);
+
+    try declareVariable();
+    if (current.scope_depth > 0) return @as(u8, 0);
+
     return identifierConstant(&parser.previous);
 }
 
+fn declareVariable() ParseError!void {
+    if (current.scope_depth == 0) return;
+
+    const name: *Token = &parser.previous;
+    {
+        var i: usize = 0;
+        while (i < current.locals.top) : (i += 1) {
+            const local = current.locals.peek(i);
+            if (local.depth != -1 and local.depth < current.scope_depth) {
+                break;
+            }
+
+            if (identifiersEqual(name, &local.name)) {
+                try errorAtPrevious("Already a variable with this name in this scope.");
+            }
+        }
+    }
+    try addLocal(name);
+}
+
+fn addLocal(name: *Token) ParseError!void {
+    if (current.locals.full()) {
+        try errorAtPrevious("Too many local variables in function.");
+        return;
+    }
+    current.locals.push(Compiler.Local{
+        .name = name.*,
+        .depth = -1,
+    });
+}
+
+fn identifiersEqual(a: *Token, b: *Token) bool {
+    return std.mem.eql(u8, a.span, b.span);
+}
+
 fn defineVariable(global: u8) ParseError!void {
+    if (current.scope_depth > 0) {
+        markInitialized();
+        return;
+    }
+
     try emitOpByte(.define_global, global);
+}
+
+fn markInitialized() void {
+    current.locals.peek(0).depth = current.scope_depth;
 }
 
 fn statement() ParseError!void {
     if (try match(.print)) {
         try printStatement();
+    } else if (try match(.left_brace)) {
+        try beginScope();
+        try block();
+        try endScope();
     } else {
         try expressionStatement();
+    }
+}
+
+fn block() ParseError!void {
+    while (!check(.right_brace) and !check(.eof)) {
+        try declaration();
+    }
+
+    try consume(.right_brace, "Expect '}' after block.");
+}
+
+fn beginScope() ParseError!void {
+    current.scope_depth += 1;
+}
+
+fn endScope() ParseError!void {
+    current.scope_depth -= 1;
+    while (!current.locals.empty() and
+        current.locals.peek(0).depth > current.scope_depth)
+    {
+        try emitOp(.pop);
+        _ = current.locals.pop();
     }
 }
 
@@ -292,12 +381,24 @@ fn binary() ParseError!void {
 }
 
 fn variable(can_assign: bool) ParseError!void {
-    const arg = try identifierConstant(&parser.previous);
+    var get_op: OpCode = undefined;
+    var set_op: OpCode = undefined;
+
+    var arg = try resolveLocal(current, &parser.previous);
+    if (arg != null) {
+        get_op = .get_local;
+        set_op = .set_local;
+    } else {
+        arg = try identifierConstant(&parser.previous);
+        get_op = .get_global;
+        set_op = .set_global;
+    }
+
     if (can_assign and try match(.equal)) {
         try expression();
-        try emitOpByte(.set_global, arg);
+        try emitOpByte(set_op, arg.?);
     } else {
-        try emitOpByte(.get_global, arg);
+        try emitOpByte(get_op, arg.?);
     }
 }
 
@@ -325,6 +426,21 @@ fn makeConstant(val: Value) !u8 {
 
 fn identifierConstant(name: *const scanner.Token) !u8 {
     return try makeConstant(Value{ .obj = try vm.createString(name.span) });
+}
+
+fn resolveLocal(compiler: *Compiler, name: *Token) ParseError!?u8 {
+    var i: usize = 0;
+    while (i < compiler.locals.top) : (i += 1) {
+        const local = compiler.locals.peek(i);
+        if (identifiersEqual(name, &local.name)) {
+            if (local.depth == -1) {
+                try errorAtPrevious("Cannot read local variable in its own initializer.");
+            }
+            return @intCast(u8, i);
+        }
+    }
+
+    return null;
 }
 
 fn advance() ParseError!void {

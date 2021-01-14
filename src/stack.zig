@@ -25,8 +25,18 @@ pub fn Stack(comptime T: type, comptime capacity: usize) type {
             self.top = 0;
         }
 
-        pub fn peek(self: *Self, distance: usize) T {
-            return self.buffer[self.top - 1 - distance];
+        pub fn peek(self: *Self, distance: usize) *T {
+            std.debug.assert(self.top > 0);
+
+            return &self.buffer[self.top - 1 - distance];
+        }
+
+        pub fn full(self: Self) bool {
+            return self.top == self.buffer.len;
+        }
+
+        pub fn empty(self: Self) bool {
+            return self.top == 0;
         }
     };
 }
