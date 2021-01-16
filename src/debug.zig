@@ -30,6 +30,15 @@ fn byteInstruction(writer: anytype, chunk: *const Chunk, offset: usize, name: []
     return offset + 2;
 }
 
+fn jumpInstruction(writer: anytype, chunk: *const Chunk, offset: usize, sign: isize, name: []const u8) !usize {
+    var jump: u16 = @as(u16, chunk.code.items[offset + 1]) << 8;
+    jump |= chunk.code.items[offset + 2];
+
+    try writer.print("{:<16} {x:0>4} -> {x:0>4}\n", .{ name, jump, @intCast(usize, @intCast(isize, offset) + 3 + sign * @as(isize, jump)) });
+
+    return offset + 3;
+}
+
 pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usize) !usize {
     const op: OpCode = @intToEnum(OpCode, chunk.code.items[offset]);
 
@@ -58,6 +67,10 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
         .get_local => return byteInstruction(writer, chunk, offset, "OP_GET_LOCAL"),
         .set_global => return constantInstruction(writer, chunk, offset, "OP_SET_GLOBAL"),
         .set_local => return byteInstruction(writer, chunk, offset, "OP_SET_LOCAL"),
+        .jump_if_false => return jumpInstruction(writer, chunk, offset, 1, "OP_JUMP_IF_FALSE"),
+        .jump_if_true => return jumpInstruction(writer, chunk, offset, 1, "OP_JUMP_IF_TRUE"),
+        .jump => return jumpInstruction(writer, chunk, offset, 1, "OP_JUMP"),
+        .loop => return jumpInstruction(writer, chunk, offset, -1, "OP_LOOP"),
     }
 }
 

@@ -29,6 +29,10 @@ pub const OpCode = enum(u8) {
     less,
     greater_equal,
     less_equal,
+    jump_if_true,
+    jump_if_false,
+    jump,
+    loop,
 };
 
 /// A Chunk of bytecode.  This is the result of compiling a single

@@ -147,6 +147,13 @@ fn readByte() u8 {
     return result;
 }
 
+fn readShort() u16 {
+    var result: u16 = @as(u16, vm.chunk.code.items[vm.ip]) << 8;
+    result |= vm.chunk.code.items[vm.ip + 1];
+    vm.ip += 2;
+    return result;
+}
+
 fn readConstant() Value {
     return vm.chunk.constants.items[readByte()];
 }
@@ -256,11 +263,11 @@ fn run() !void {
     const stdout = std.io.getStdOut().writer();
 
     while (true) {
-        var next_ip: usize = undefined;
         if (debug.trace_execution) {
             const stack_values = vm.stack.buffer[0..vm.stack.top];
+            try stdout.print("  IP = {x:0>4}", .{vm.ip});
             try debug.dumpValueStack(stdout, stack_values);
-            next_ip = try debug.disassembleInstruction(stdout, vm.chunk, vm.ip);
+            _ = try debug.disassembleInstruction(stdout, vm.chunk, vm.ip);
         }
 
         const instruction = @intToEnum(OpCode, readByte());
@@ -343,10 +350,26 @@ fn run() !void {
             .greater_equal => try binaryOp(.{Op.greaterEqual}, ">="),
             .less => try binaryOp(.{Op.less}, "<"),
             .less_equal => try binaryOp(.{Op.lessEqual}, "<="),
-        }
-
-        if (debug.trace_execution) {
-            std.debug.assert(next_ip == vm.ip);
+            .jump_if_false => {
+                const offset = readShort();
+                if (isFalsey(vm.stack.peek(0).*)) {
+                    vm.ip += offset;
+                }
+            },
+            .jump_if_true => {
+                const offset = readShort();
+                if (!isFalsey(vm.stack.peek(0).*)) {
+                    vm.ip += offset;
+                }
+            },
+            .jump => {
+                const offset = readShort();
+                vm.ip += offset;
+            },
+            .loop => {
+                const offset = readShort();
+                vm.ip -= offset;
+            },
         }
     }
 }

@@ -135,6 +135,18 @@ const rules_table = blk: {
 
     table[@enumToInt(TokenTag.identifier)].prefix = variable;
 
+    table[@enumToInt(TokenTag.and_)] = ParseRule{
+        .prefix = null,
+        .infix = and_,
+        .precedence = .and_,
+    };
+
+    table[@enumToInt(TokenTag.or_)] = ParseRule{
+        .prefix = null,
+        .infix = or_,
+        .precedence = .or_,
+    };
+
     break :blk table;
 };
 
@@ -271,6 +283,12 @@ fn markInitialized() void {
 fn statement() ParseError!void {
     if (try match(.print)) {
         try printStatement();
+    } else if (try match(.for_)) {
+        try forStatement();
+    } else if (try match(.if_)) {
+        try ifStatement();
+    } else if (try match(.while_)) {
+        try whileStatement();
     } else if (try match(.left_brace)) {
         try beginScope();
         try block();
@@ -306,6 +324,91 @@ fn printStatement() ParseError!void {
     try expression();
     try consume(.semicolon, "Expect ';' after value.");
     try emitOp(.print);
+}
+
+fn ifStatement() ParseError!void {
+    try consume(.left_paren, "Expect '(' after 'if'.");
+    try expression();
+    try consume(.right_paren, "Expect '(' after 'if'.");
+
+    const thenJump = try emitJump(.jump_if_false);
+    try emitOp(.pop);
+    try statement();
+
+    const elseJump = try emitJump(.jump);
+    try patchJump(thenJump);
+    try emitOp(.pop);
+
+    if (try match(.else_)) try statement();
+    try patchJump(elseJump);
+}
+
+fn whileStatement() ParseError!void {
+    const loopStart = compiling_chunk.code.items.len;
+    try consume(.left_paren, "Expect '(' after 'while'.");
+    try expression();
+    try consume(.right_paren, "Expect '(' after 'while'.");
+
+    const exitJump = try emitJump(.jump_if_false);
+    try emitOp(.pop);
+    try statement();
+
+    try emitLoop(loopStart);
+
+    try patchJump(exitJump);
+    try emitOp(.pop);
+}
+
+fn forStatement() ParseError!void {
+    try beginScope();
+    try consume(.left_paren, "Expect '(' after 'for'");
+
+    // Initializer clause
+    if (try match(.semicolon)) {
+        // No initializer
+    } else if (try match(.var_)) {
+        try varDeclaration();
+    } else {
+        try expressionStatement();
+    }
+
+    var loopStart = compiling_chunk.code.items.len;
+
+    // Condition clause
+    var exitJump: ?usize = null;
+    if (!try match(.semicolon)) {
+        try expression();
+        try consume(.semicolon, "Expect ';' after loop condition.");
+
+        exitJump = try emitJump(.jump_if_false);
+        try emitOp(.pop);
+    }
+
+    // Increment clause
+    if (!try match(.right_paren)) {
+        const bodyJump = try emitJump(.jump);
+
+        const incrementStart = compiling_chunk.code.items.len;
+        try expression();
+        try emitOp(.pop);
+        try consume(.right_paren, "Expect ')' after 'for clauses'");
+
+        try emitLoop(loopStart);
+        loopStart = incrementStart;
+        try patchJump(bodyJump);
+    }
+
+    // User code
+    try statement();
+
+    try emitLoop(loopStart);
+
+    if (exitJump != null) {
+        try patchJump(exitJump.?);
+        try emitOp(.pop);
+    }
+
+    try endScope();
 }
 
 fn expressionStatement() ParseError!void {
@@ -378,6 +481,24 @@ fn binary() ParseError!void {
         .greater_equal => try emitOp(.greater_equal),
         else => unreachable,
     }
+}
+
+fn and_() ParseError!void {
+    const endJump = try emitJump(.jump_if_false);
+
+    try emitOp(.pop);
+    try parsePrecedence(.and_);
+
+    try patchJump(endJump);
+}
+
+fn or_() ParseError!void {
+    const endJump = try emitJump(.jump_if_true);
+
+    try emitOp(.pop);
+    try parsePrecedence(.or_);
+
+    try patchJump(endJump);
 }
 
 fn variable(can_assign: bool) ParseError!void {
@@ -477,9 +598,42 @@ fn emitOp(op: OpCode) !void {
     try compiling_chunk.writeOp(op, parser.previous.line);
 }
 
+fn emitByte(byte: u8) !void {
+    try compiling_chunk.write(byte, parser.previous.line);
+}
+
 fn emitOpByte(op: OpCode, byte: u8) !void {
     try compiling_chunk.writeOp(op, parser.previous.line);
     try compiling_chunk.write(byte, parser.previous.line);
+}
+
+fn emitJump(jump: OpCode) !usize {
+    try emitOp(jump);
+    try emitByte(0xff);
+    try emitByte(0xff);
+    return compiling_chunk.code.items.len - 2;
+}
+
+fn emitLoop(start: usize) !void {
+    try emitOp(.loop);
+
+    const offset = compiling_chunk.code.items.len - start + 2;
+    if (offset > std.math.maxInt(u16)) try errorAtPrevious("Loop body too large.");
+
+    try emitByte(@intCast(u8, (offset >> 8) & 0xff));
+    try emitByte(@intCast(u8, offset & 0xff));
+}
+
+fn patchJump(offset: usize) !void {
+    // -2 to adjust for the bytecode for the jump offset itself.
+    const jump = compiling_chunk.code.items.len - offset - 2;
+
+    if (jump > std.math.maxInt(u16)) {
+        try errorAtPrevious("Too much code to jump over.");
+    }
+
+    compiling_chunk.code.items[offset] = @intCast(u8, (jump >> 8) & 0xff);
+    compiling_chunk.code.items[offset + 1] = @intCast(u8, jump & 0xff);
 }
 
 fn errorAtPrevious(message: []const u8) ParseError!void {
