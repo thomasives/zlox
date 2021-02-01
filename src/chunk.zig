@@ -13,6 +13,7 @@ pub const OpCode = enum(u8) {
     constant,
     pop,
     print,
+    call,
     return_,
     negate,
     add,

@@ -5,7 +5,7 @@ const Chunk = @import("chunk.zig").Chunk;
 const Stack = @import("stack.zig").Stack;
 const value = @import("value.zig");
 
-pub const trace_execution = false;
+pub const trace_execution = true;
 pub const print_code = true;
 
 fn simpleInstruction(writer: anytype, offset: usize, name: []const u8) !usize {
@@ -44,6 +44,7 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
 
     switch (op) {
         .return_ => return try simpleInstruction(writer, offset, "OP_RETURN"),
+        .call => return try byteInstruction(writer, chunk, offset, "OP_CALL"),
         .pop => return try simpleInstruction(writer, offset, "OP_POP"),
         .constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
         .print => return try simpleInstruction(writer, offset, "OP_PRINT"),

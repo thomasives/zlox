@@ -12,6 +12,7 @@ const OpCode = @import("chunk.zig").OpCode;
 const Token = scanner.Token;
 const TokenTag = scanner.TokenTag;
 const Value = vl.Value;
+const Function = vl.Function;
 
 const Parser = struct {
     current: Token = undefined,
@@ -21,11 +22,19 @@ const Parser = struct {
 };
 
 const Compiler = struct {
+    const FunctionType = enum {
+        script,
+        function,
+    };
     const Local = struct {
         name: Token,
         depth: i64,
     };
     const Locals = Stack(Local, std.math.maxInt(u8) + 1);
+
+    enclosing: ?*Compiler = null,
+    function: *Function,
+    ty: FunctionType,
 
     locals: Locals = .{},
     scope_depth: i64 = 0,
@@ -62,7 +71,11 @@ const rules_table = blk: {
         .precedence = .none,
     }} ** @typeInfo(TokenTag).Enum.fields.len;
 
-    table[@enumToInt(TokenTag.left_paren)].prefix = grouping;
+    table[@enumToInt(TokenTag.left_paren)] = ParseRule{
+        .prefix = grouping,
+        .infix = call,
+        .precedence = .call,
+    };
 
     table[@enumToInt(TokenTag.minus)] = ParseRule{
         .prefix = unary,
@@ -156,13 +169,13 @@ fn getRule(tag: TokenTag) *const ParseRule {
 
 var parser = Parser{};
 var current: *Compiler = undefined;
-var compiling_chunk: Chunk = undefined;
 
-pub fn compile(allocator: *Allocator, source_code: []const u8) !Chunk {
+pub fn compile(allocator: *Allocator, source_code: []const u8) !*Function {
     scanner.init(source_code);
-    compiling_chunk = Chunk.init(allocator);
-    errdefer compiling_chunk.deinit();
-    var compiler = Compiler{};
+    var compiler = Compiler{
+        .function = try vm.newFunction(),
+        .ty = .script,
+    };
     current = &compiler;
 
     parser.hadError = false;
@@ -173,13 +186,13 @@ pub fn compile(allocator: *Allocator, source_code: []const u8) !Chunk {
         try declaration();
     }
 
-    try endCompiler();
+    const func = try endCompiler();
 
     if (parser.hadError) {
         return vm.InterpretError.Compilation;
     }
 
-    return compiling_chunk;
+    return func;
 }
 
 fn parsePrecedence(prec: Precedence) ParseError!void {
@@ -201,13 +214,59 @@ fn parsePrecedence(prec: Precedence) ParseError!void {
 }
 
 fn declaration() ParseError!void {
-    if (try match(.var_)) {
+    if (try match(.fun)) {
+        try funDeclaration();
+    } else if (try match(.var_)) {
         try varDeclaration();
     } else {
         try statement();
     }
 
     if (parser.panicMode) try synchronize();
+}
+
+fn funDeclaration() ParseError!void {
+    const global = try parseVariable("Expect function name.");
+    markInitialized();
+    try function(.function);
+    try defineVariable(global);
+}
+
+fn function(ty: Compiler.FunctionType) ParseError!void {
+    var compiler = Compiler{
+        .enclosing = current,
+        .function = try vm.newFunction(),
+        .ty = ty,
+    };
+    if (ty != .script) {
+        const name = try vm.createString(parser.previous.span);
+        compiler.function.name = name.cast(vl.String).?;
+    }
+    current = &compiler;
+    try beginScope();
+
+    try consume(.left_paren, "Expect '(' after function name.");
+    if (!check(.right_paren)) {
+        while (true) {
+            current.function.arity += 1;
+            if (current.function.arity > 255) {
+                try errorAtCurrent("Can't have more than 255 parameters");
+            }
+
+            const param = try parseVariable("Expected parameter name.");
+            try defineVariable(param);
+
+            if (!try match(.comma)) break;
+        }
+    }
+    try consume(.right_paren, "Expect ')' after function name.");
+
+    try consume(.left_brace, "Expect '{' before function body.");
+    try block();
+
+    const func = try endCompiler();
+    current = compiler.enclosing.?;
+    try emitOpByte(.constant, try makeConstant(Value{ .obj = &func.base }));
 }
 
 fn varDeclaration() ParseError!void {
@@ -277,6 +336,7 @@ fn defineVariable(global: u8) ParseError!void {
 }
 
 fn markInitialized() void {
+    if (current.scope_depth == 0) return;
     current.locals.peek(0).depth = current.scope_depth;
 }
 
@@ -287,6 +347,8 @@ fn statement() ParseError!void {
         try forStatement();
     } else if (try match(.if_)) {
         try ifStatement();
+    } else if (try match(.return_)) {
+        try returnStatement();
     } else if (try match(.while_)) {
         try whileStatement();
     } else if (try match(.left_brace)) {
@@ -326,6 +388,21 @@ fn printStatement() ParseError!void {
     try emitOp(.print);
 }
 
+fn returnStatement() ParseError!void {
+    if (current.ty == .script) {
+        try errorAtPrevious("Can't return from top-level code.");
+    }
+
+    if (try match(.semicolon)) {
+        try emitOp(.nil);
+        try emitOp(.return_);
+    } else {
+        try expression();
+        try consume(.semicolon, "Expected ';' after return value.");
+        try emitOp(.return_);
+    }
+}
+
 fn ifStatement() ParseError!void {
     try consume(.left_paren, "Expect '(' after 'if'.");
     try expression();
@@ -344,7 +421,7 @@ fn ifStatement() ParseError!void {
 }
 
 fn whileStatement() ParseError!void {
-    const loopStart = compiling_chunk.code.items.len;
+    const loopStart = current.function.chunk.code.items.len;
     try consume(.left_paren, "Expect '(' after 'while'.");
     try expression();
     try consume(.right_paren, "Expect '(' after 'while'.");
@@ -372,7 +449,7 @@ fn forStatement() ParseError!void {
         try expressionStatement();
     }
 
-    var loopStart = compiling_chunk.code.items.len;
+    var loopStart = current.function.chunk.code.items.len;
 
     // Condition clause
     var exitJump: ?usize = null;
@@ -388,7 +465,7 @@ fn forStatement() ParseError!void {
     if (!try match(.right_paren)) {
         const bodyJump = try emitJump(.jump);
 
-        const incrementStart = compiling_chunk.code.items.len;
+        const incrementStart = current.function.chunk.code.items.len;
         try expression();
         try emitOp(.pop);
         try consume(.right_paren, "Expect ')' after 'for clauses'");
@@ -443,6 +520,29 @@ fn string(can_assign: bool) ParseError!void {
     var obj = try vm.createString(parser.previous.span[1 .. len - 1]);
 
     try emitOpByte(.constant, try makeConstant(Value{ .obj = obj }));
+}
+
+fn call() ParseError!void {
+    const arg_count = try argumentList();
+    try emitOpByte(.call, arg_count);
+}
+
+fn argumentList() ParseError!u8 {
+    var arg_count: u8 = 0;
+
+    if (!check(.right_paren)) {
+        while (true) {
+            try expression();
+            if (arg_count == 255) {
+                try errorAtPrevious("Can't have more than 255 arguments.");
+            }
+            arg_count += 1;
+            if (!try match(.comma)) break;
+        }
+    }
+
+    try consume(.right_paren, "Expect ')' after arguments");
+    return arg_count;
 }
 
 fn grouping(can_assign: bool) ParseError!void {
@@ -523,19 +623,23 @@ fn variable(can_assign: bool) ParseError!void {
     }
 }
 
-fn endCompiler() !void {
+fn endCompiler() !*Function {
+    try emitOp(.nil);
     try emitOp(.return_);
+    const func = current.function;
 
     if (debug.print_code) {
         const writer = std.io.getStdOut().writer();
         if (!parser.hadError) {
-            try debug.disassembleChunk(writer, &compiling_chunk, "code");
+            try debug.disassembleChunk(writer, &current.function.chunk, if (func.name != null) func.name.?.chars else "<script>");
         }
     }
+
+    return func;
 }
 
 fn makeConstant(val: Value) !u8 {
-    const index = try compiling_chunk.addConstant(val);
+    const index = try current.function.chunk.addConstant(val);
 
     if (index > std.math.maxInt(u8)) {
         try errorAtPrevious("Too many constants for single chunk.");
@@ -557,7 +661,7 @@ fn resolveLocal(compiler: *Compiler, name: *Token) ParseError!?u8 {
             if (local.depth == -1) {
                 try errorAtPrevious("Cannot read local variable in its own initializer.");
             }
-            return @intCast(u8, i);
+            return @intCast(u8, i + 1);
         }
     }
 
@@ -595,29 +699,29 @@ fn consume(expected: scanner.TokenTag, error_message: []const u8) !void {
 }
 
 fn emitOp(op: OpCode) !void {
-    try compiling_chunk.writeOp(op, parser.previous.line);
+    try current.function.chunk.writeOp(op, parser.previous.line);
 }
 
 fn emitByte(byte: u8) !void {
-    try compiling_chunk.write(byte, parser.previous.line);
+    try current.function.chunk.write(byte, parser.previous.line);
 }
 
 fn emitOpByte(op: OpCode, byte: u8) !void {
-    try compiling_chunk.writeOp(op, parser.previous.line);
-    try compiling_chunk.write(byte, parser.previous.line);
+    try current.function.chunk.writeOp(op, parser.previous.line);
+    try current.function.chunk.write(byte, parser.previous.line);
 }
 
 fn emitJump(jump: OpCode) !usize {
     try emitOp(jump);
     try emitByte(0xff);
     try emitByte(0xff);
-    return compiling_chunk.code.items.len - 2;
+    return current.function.chunk.code.items.len - 2;
 }
 
 fn emitLoop(start: usize) !void {
     try emitOp(.loop);
 
-    const offset = compiling_chunk.code.items.len - start + 2;
+    const offset = current.function.chunk.code.items.len - start + 2;
     if (offset > std.math.maxInt(u16)) try errorAtPrevious("Loop body too large.");
 
     try emitByte(@intCast(u8, (offset >> 8) & 0xff));
@@ -626,14 +730,14 @@ fn emitLoop(start: usize) !void {
 
 fn patchJump(offset: usize) !void {
     // -2 to adjust for the bytecode for the jump offset itself.
-    const jump = compiling_chunk.code.items.len - offset - 2;
+    const jump = current.function.chunk.code.items.len - offset - 2;
 
     if (jump > std.math.maxInt(u16)) {
         try errorAtPrevious("Too much code to jump over.");
     }
 
-    compiling_chunk.code.items[offset] = @intCast(u8, (jump >> 8) & 0xff);
-    compiling_chunk.code.items[offset + 1] = @intCast(u8, jump & 0xff);
+    current.function.chunk.code.items[offset] = @intCast(u8, (jump >> 8) & 0xff);
+    current.function.chunk.code.items[offset + 1] = @intCast(u8, jump & 0xff);
 }
 
 fn errorAtPrevious(message: []const u8) ParseError!void {

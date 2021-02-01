@@ -1,4 +1,5 @@
 const std = @import("std");
+const Chunk = @import("chunk.zig").Chunk;
 
 /// A lox value.
 pub const Value = union(enum) {
@@ -18,6 +19,17 @@ pub const Value = union(enum) {
             .obj => {
                 switch (self.obj.ty) {
                     .string => try writer.print("\"{}\"", .{self.cast([]const u8).?}),
+                    .function => {
+                        const function = self.cast(*Function).?;
+                        if (function.name) |name| {
+                            try writer.print("<fn {}>", .{name.chars});
+                        } else {
+                            try writer.print("<script>", .{});
+                        }
+                    },
+                    .native => {
+                        try writer.print("<native fn>", .{});
+                    },
                 }
             },
         }
@@ -28,6 +40,8 @@ pub const Value = union(enum) {
         boolean,
         nil,
         string,
+        function,
+        native,
 
         pub fn format(self: Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
             switch (self) {
@@ -35,6 +49,8 @@ pub const Value = union(enum) {
                 .boolean => try writer.print("{}", .{"bool"}),
                 .nil => try writer.print("{}", .{"nil"}),
                 .string => try writer.print("{}", .{"string"}),
+                .function => try writer.print("{}", .{"function"}),
+                .native => try writer.print("{}", .{"native fn"}),
             }
         }
     };
@@ -47,6 +63,8 @@ pub const Value = union(enum) {
             .obj => {
                 switch (self.obj.ty) {
                     .string => return .string,
+                    .function => return .function,
+                    .native => return .native,
                 }
             },
         }
@@ -74,6 +92,16 @@ pub const Value = union(enum) {
             } else {
                 return null;
             },
+            *Function => if (self.ty() == .function) {
+                return @fieldParentPtr(Function, "base", self.obj);
+            } else {
+                return null;
+            },
+            *Native => if (self.ty() == .native) {
+                return @fieldParentPtr(Native, "base", self.obj);
+            } else {
+                return null;
+            },
             []const u8 => if (self.ty() == .string) {
                 return @fieldParentPtr(String, "base", self.obj).chars;
             } else {
@@ -87,6 +115,8 @@ pub const Value = union(enum) {
 pub const Obj = struct {
     pub const Type = enum {
         string,
+        function,
+        native,
     };
     ty: Type,
     next: ?*Obj,
@@ -95,6 +125,16 @@ pub const Obj = struct {
         switch (T) {
             String => if (self.ty == .string) {
                 return @fieldParentPtr(String, "base", self);
+            } else {
+                return null;
+            },
+            Function => if (self.ty == .function) {
+                return @fieldParentPtr(Function, "base", self);
+            } else {
+                return null;
+            },
+            Native => if (self.ty == .native) {
+                return @fieldParentPtr(Native, "base", self);
             } else {
                 return null;
             },
@@ -109,6 +149,22 @@ pub const String = struct {
     chars: []const u8,
 };
 
+pub const Function = struct {
+    pub const base_type = .function;
+    base: Obj,
+    arity: i32,
+    chunk: Chunk,
+    name: ?*String,
+};
+
+pub const Native = struct {
+    pub const base_type = .native;
+    pub const Fn = fn ([]Value) Value;
+
+    base: Obj,
+    function: Fn,
+};
+
 pub fn equal(a: Value, b: Value) bool {
     if (a.ty() != b.ty()) return false;
 
@@ -116,6 +172,8 @@ pub fn equal(a: Value, b: Value) bool {
         .boolean => return a.boolean == b.boolean,
         .nil => return true,
         .number => return a.number == b.number,
-        .string => return std.mem.eql(u8, a.cast([]const u8).?, b.cast([]const u8).?),
+        .string => return a.obj == b.obj,
+        .function => return a.obj == b.obj,
+        .native => return a.obj == b.obj,
     }
 }

@@ -9,6 +9,8 @@ const Chunk = @import("chunk.zig").Chunk;
 const Value = vl.Value;
 const Obj = vl.Obj;
 const String = vl.String;
+const Function = vl.Function;
+const Native = vl.Native;
 const Allocator = std.mem.Allocator;
 
 const compile = @import("compiler.zig").compile;
@@ -25,20 +27,25 @@ pub const InterpretError = error{
     Compilation,
 };
 
+const CallFrame = struct {
+    function: *Function,
+    ip: usize,
+    slots: []Value,
+};
+
 /// The lox virtual machine
 const Vm = struct {
     const Self = @This();
 
     pub const Stack = stack.Stack(Value, 256);
+    pub const CallStack = stack.Stack(CallFrame, 64);
     pub const Internment = std.StringHashMap(*Obj);
     pub const Globals = std.AutoHashMap(*String, Value);
 
     allocator: *std.mem.Allocator,
 
-    /// The currently executing chunk
-    chunk: *Chunk,
-    /// Instruction pointer into the currently executing chunk
-    ip: usize,
+    /// Stack of function calls
+    frames: CallStack,
     /// Runtime stack of values
     stack: Stack,
     /// Global variables
@@ -65,6 +72,16 @@ pub fn createObj(comptime T: type) !*T {
     return ptr;
 }
 
+pub fn newFunction() !*Function {
+    const function = try createObj(Function);
+
+    function.arity = 0;
+    function.name = null;
+    function.chunk = Chunk.init(vm.allocator);
+
+    return function;
+}
+
 pub fn createString(chars: []const u8) !*Obj {
     var interned = vm.strings.get(chars);
 
@@ -89,12 +106,7 @@ fn createStringNoDupe(chars: []const u8) !*Obj {
 
 /// Free an object managed by the VM
 pub fn destroyObj(obj: *Obj) void {
-    switch (obj.ty) {
-        .string => {
-            const string = obj.cast(String).?;
-            vm.allocator.destroy(obj);
-        },
-    }
+    vm.allocator.destroy(obj);
 }
 
 /// Free the allocated memebers of a managed object
@@ -104,15 +116,25 @@ pub fn deallocateObj(obj: *Obj) void {
             const string = obj.cast(String).?;
             vm.allocator.free(string.chars);
         },
+        .function => {
+            const function = obj.cast(Function).?;
+            function.chunk.deinit();
+        },
+        .native => {
+            // Nothing to do
+        },
     }
 }
 
 pub fn init(allocator: *Allocator) !void {
     vm.allocator = allocator;
+    vm.frames = .{};
     vm.stack = .{};
     vm.objects = null;
     vm.strings = Vm.Internment.init(allocator);
     vm.globals = Vm.Globals.init(allocator);
+
+    try defineNative("clock", clockNative);
 }
 
 pub fn deinit() void {
@@ -132,30 +154,28 @@ pub fn interpret(source_code: []const u8) !void {
     defer std.debug.assert(vm.stack.top == 0);
     errdefer vm.stack.top = 0;
 
-    var chunk = try compile(vm.allocator, source_code);
-    defer chunk.deinit();
-
-    vm.chunk = &chunk;
-    vm.ip = 0;
+    const func = try compile(vm.allocator, source_code);
+    vm.stack.push(Value{ .obj = &func.base });
+    try callValue(Value{ .obj = &func.base }, 0);
 
     try run();
 }
 
-fn readByte() u8 {
-    const result = vm.chunk.code.items[vm.ip];
-    vm.ip += 1;
+fn readByte(frame: *CallFrame) u8 {
+    const result = frame.function.chunk.code.items[frame.ip];
+    frame.ip += 1;
     return result;
 }
 
-fn readShort() u16 {
-    var result: u16 = @as(u16, vm.chunk.code.items[vm.ip]) << 8;
-    result |= vm.chunk.code.items[vm.ip + 1];
-    vm.ip += 2;
+fn readShort(frame: *CallFrame) u16 {
+    var result: u16 = @as(u16, frame.function.chunk.code.items[frame.ip]) << 8;
+    result |= frame.function.chunk.code.items[frame.ip + 1];
+    frame.ip += 2;
     return result;
 }
 
-fn readConstant() Value {
-    return vm.chunk.constants.items[readByte()];
+fn readConstant(frame: *CallFrame) Value {
+    return frame.function.chunk.constants.items[readByte(frame)];
 }
 
 fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
@@ -259,39 +279,82 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
     return InterpretError.Runtime;
 }
 
+fn callValue(callee: Value, arg_count: u8) !void {
+    if (callee.cast(*Function)) |func| {
+        if (arg_count != func.arity) {
+            try runtimeError("Expected {} arguments but got {}.", .{ func.arity, arg_count });
+            return InterpretError.Runtime;
+        }
+
+        if (vm.frames.full()) {
+            try runtimeError("Stack overflow.", .{});
+            return InterpretError.Runtime;
+        }
+
+        vm.frames.push(CallFrame{
+            .function = func,
+            .ip = 0,
+            .slots = vm.stack.buffer[vm.stack.top - arg_count - 1 ..],
+        });
+    } else if (callee.cast(*Native)) |native| {
+        const result = native.function(vm.stack.buffer[vm.stack.top - arg_count - 1 ..]);
+        vm.stack.top -= arg_count + 1;
+        vm.stack.push(result);
+    } else {
+        try runtimeError("Can only call functions and classes.", .{});
+        return InterpretError.Runtime;
+    }
+}
+
 fn run() !void {
     const stdout = std.io.getStdOut().writer();
+    var frame = vm.frames.peek(0);
 
     while (true) {
         if (debug.trace_execution) {
-            const stack_values = vm.stack.buffer[0..vm.stack.top];
-            try stdout.print("  IP = {x:0>4}", .{vm.ip});
+            const top = (@ptrToInt(&vm.stack.buffer[vm.stack.top]) -
+                @ptrToInt(&frame.slots[0])) / @sizeOf(Value);
+            const stack_values = frame.slots[0..top];
+            try stdout.print("  IP = {x:0>4}", .{frame.ip});
             try debug.dumpValueStack(stdout, stack_values);
-            _ = try debug.disassembleInstruction(stdout, vm.chunk, vm.ip);
+            _ = try debug.disassembleInstruction(stdout, &frame.function.chunk, frame.ip);
         }
 
-        const instruction = @intToEnum(OpCode, readByte());
+        const instruction = @intToEnum(OpCode, readByte(frame));
         switch (instruction) {
-            .return_ => return,
+            .return_ => {
+                const result = vm.stack.pop();
+
+                _ = vm.frames.pop();
+                if (vm.frames.empty()) {
+                    _ = vm.stack.pop();
+                    return;
+                }
+
+                vm.stack.top = (@ptrToInt(frame.slots.ptr) - @ptrToInt(&vm.stack.buffer[0])) / @sizeOf(Value);
+                vm.stack.push(result);
+
+                frame = vm.frames.peek(0);
+            },
             .pop => _ = vm.stack.pop(),
             .print => {
                 const v = vm.stack.pop();
                 try stdout.print("{}\n", .{v});
             },
             .constant => {
-                const v = readConstant();
+                const v = readConstant(frame);
                 vm.stack.push(v);
             },
             .define_global => {
-                const name = readConstant().cast(*String).?;
+                const name = readConstant(frame).cast(*String).?;
                 try vm.globals.put(name, vm.stack.pop());
             },
             .get_local => {
-                const slot = readByte();
-                vm.stack.push(vm.stack.buffer[slot]);
+                const slot = readByte(frame);
+                vm.stack.push(frame.slots[slot]);
             },
             .get_global => {
-                const name = readConstant().cast(*String).?;
+                const name = readConstant(frame).cast(*String).?;
                 const value = vm.globals.get(name);
                 if (value) |v| {
                     vm.stack.push(v);
@@ -301,11 +364,11 @@ fn run() !void {
                 }
             },
             .set_local => {
-                const slot = readByte();
-                vm.stack.buffer[slot] = vm.stack.peek(0).*;
+                const slot = readByte(frame);
+                frame.slots[slot] = vm.stack.peek(0).*;
             },
             .set_global => {
-                const name = readConstant().cast(*String).?;
+                const name = readConstant(frame).cast(*String).?;
                 const entry = vm.globals.getEntry(name);
                 if (entry) |e| {
                     e.value = vm.stack.peek(0).*;
@@ -313,6 +376,11 @@ fn run() !void {
                     try runtimeError("Undefined variable '{}'", .{name.chars});
                     return InterpretError.Runtime;
                 }
+            },
+            .call => {
+                const arg_count = readByte(frame);
+                try callValue(vm.stack.peek(arg_count).*, arg_count);
+                frame = vm.frames.peek(0);
             },
             .negate => {
                 if (vm.stack.peek(0).* != .number) {
@@ -351,24 +419,24 @@ fn run() !void {
             .less => try binaryOp(.{Op.less}, "<"),
             .less_equal => try binaryOp(.{Op.lessEqual}, "<="),
             .jump_if_false => {
-                const offset = readShort();
+                const offset = readShort(frame);
                 if (isFalsey(vm.stack.peek(0).*)) {
-                    vm.ip += offset;
+                    frame.ip += offset;
                 }
             },
             .jump_if_true => {
-                const offset = readShort();
+                const offset = readShort(frame);
                 if (!isFalsey(vm.stack.peek(0).*)) {
-                    vm.ip += offset;
+                    frame.ip += offset;
                 }
             },
             .jump => {
-                const offset = readShort();
-                vm.ip += offset;
+                const offset = readShort(frame);
+                frame.ip += offset;
             },
             .loop => {
-                const offset = readShort();
-                vm.ip -= offset;
+                const offset = readShort(frame);
+                frame.ip -= offset;
             },
         }
     }
@@ -377,9 +445,20 @@ fn run() !void {
 fn runtimeError(comptime fmt: []const u8, args: anytype) !void {
     const stderr = std.io.getStdErr().writer();
     try stderr.print(fmt, args);
+    try stderr.print("\n", .{});
 
-    const line = vm.chunk.lines.items[vm.ip];
-    try stderr.print("\n[line {}] in script\n", .{line});
+    var i = @intCast(isize, vm.frames.top) - 1;
+    while (i >= 0) : (i -= 1) {
+        const frame = vm.frames.peek(@intCast(usize, i));
+        const func = frame.function;
+
+        const line = func.chunk.lines.items[frame.ip];
+
+        try stderr.print(
+            "[line {}] in {}\n",
+            .{ line, if (func.name != null) func.name.?.chars else "script" },
+        );
+    }
 }
 
 fn isFalsey(a: Value) bool {
@@ -388,6 +467,24 @@ fn isFalsey(a: Value) bool {
         .boolean => |b| return !b,
         else => return false,
     }
+}
+
+fn defineNative(name: []const u8, func: Native.Fn) !void {
+    vm.stack.push(Value{ .obj = try createString(name) });
+    var native = try createObj(Native);
+    native.function = func;
+    vm.stack.push(Value{ .obj = &native.base });
+    try vm.globals.put(vm.stack.peek(1).cast(*String).?, vm.stack.peek(0).*);
+    _ = vm.stack.pop();
+    _ = vm.stack.pop();
+}
+
+fn clockNative(args: []Value) Value {
+    var ts: std.os.timespec = undefined;
+    std.os.clock_gettime(std.os.CLOCK_MONOTONIC, &ts) catch |_| {};
+    var time = @intToFloat(f64, ts.tv_sec);
+    time += @intToFloat(f64, ts.tv_nsec) * 1e-9;
+    return Value{ .number = time };
 }
 
 const Op = struct {

@@ -17,4 +17,6 @@ Using zig version 0.7.1.
 - [x] Chapter 20 Hash Tables
 - [x] Chapter 21 Global Variables
 - [x] Chapter 22 Local Variables
-- [ ] Chapter 23 Jumping Back and Forth
+- [x] Chapter 23 Jumping Back and Forth
+- [x] Chapter 24 Calls and Functions
+- [ ] Chapter 25 Closures
