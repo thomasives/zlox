@@ -38,6 +38,10 @@ pub fn Stack(comptime T: type, comptime capacity: usize) type {
         pub fn empty(self: Self) bool {
             return self.top == 0;
         }
+
+        pub fn slice(self: Self) []const T {
+            return self.buffer[0..self.top];
+        }
     };
 }
 

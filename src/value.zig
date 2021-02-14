@@ -1,6 +1,14 @@
 const std = @import("std");
 const Chunk = @import("chunk.zig").Chunk;
 
+fn printFunction(writer: anytype, function: *Function) !void {
+    if (function.name) |name| {
+        try writer.print("<fn {}>", .{name.chars});
+    } else {
+        try writer.print("<script>", .{});
+    }
+}
+
 /// A lox value.
 pub const Value = union(enum) {
     number: f64,
@@ -21,14 +29,17 @@ pub const Value = union(enum) {
                     .string => try writer.print("\"{}\"", .{self.cast([]const u8).?}),
                     .function => {
                         const function = self.cast(*Function).?;
-                        if (function.name) |name| {
-                            try writer.print("<fn {}>", .{name.chars});
-                        } else {
-                            try writer.print("<script>", .{});
-                        }
+                        try printFunction(writer, function);
+                    },
+                    .closure => {
+                        const closure = self.cast(*Closure).?;
+                        try printFunction(writer, closure.function);
                     },
                     .native => {
                         try writer.print("<native fn>", .{});
+                    },
+                    .upvalue => {
+                        try writer.print("<upvalue>", .{});
                     },
                 }
             },
@@ -41,7 +52,9 @@ pub const Value = union(enum) {
         nil,
         string,
         function,
+        closure,
         native,
+        upvalue,
 
         pub fn format(self: Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
             switch (self) {
@@ -50,7 +63,9 @@ pub const Value = union(enum) {
                 .nil => try writer.print("{}", .{"nil"}),
                 .string => try writer.print("{}", .{"string"}),
                 .function => try writer.print("{}", .{"function"}),
+                .closure => try writer.print("{}", .{"closure"}),
                 .native => try writer.print("{}", .{"native fn"}),
+                .upvalue => try writer.print("{}", .{"upvalue"}),
             }
         }
     };
@@ -65,6 +80,8 @@ pub const Value = union(enum) {
                     .string => return .string,
                     .function => return .function,
                     .native => return .native,
+                    .closure => return .closure,
+                    .upvalue => return .upvalue,
                 }
             },
         }
@@ -97,8 +114,18 @@ pub const Value = union(enum) {
             } else {
                 return null;
             },
+            *Closure => if (self.ty() == .closure) {
+                return @fieldParentPtr(Closure, "base", self.obj);
+            } else {
+                return null;
+            },
             *Native => if (self.ty() == .native) {
                 return @fieldParentPtr(Native, "base", self.obj);
+            } else {
+                return null;
+            },
+            *Upvalue => if (self.ty() == .upvalue) {
+                return @fieldParentPtr(Upvalue, "base", self.obj);
             } else {
                 return null;
             },
@@ -116,7 +143,9 @@ pub const Obj = struct {
     pub const Type = enum {
         string,
         function,
+        closure,
         native,
+        upvalue,
     };
     ty: Type,
     next: ?*Obj,
@@ -133,8 +162,18 @@ pub const Obj = struct {
             } else {
                 return null;
             },
+            Closure => if (self.ty == .closure) {
+                return @fieldParentPtr(Closure, "base", self);
+            } else {
+                return null;
+            },
             Native => if (self.ty == .native) {
                 return @fieldParentPtr(Native, "base", self);
+            } else {
+                return null;
+            },
+            Upvalue => if (self.ty == .upvalue) {
+                return @fieldParentPtr(Upvalue, "base", self);
             } else {
                 return null;
             },
@@ -153,8 +192,16 @@ pub const Function = struct {
     pub const base_type = .function;
     base: Obj,
     arity: i32,
+    upvalue_count: i32,
     chunk: Chunk,
     name: ?*String,
+};
+
+pub const Closure = struct {
+    pub const base_type = .closure;
+    base: Obj,
+    function: *Function,
+    upvalues: []?*Upvalue
 };
 
 pub const Native = struct {
@@ -165,6 +212,14 @@ pub const Native = struct {
     function: Fn,
 };
 
+pub const Upvalue = struct {
+    pub const base_type = .upvalue;
+    base: Obj,
+    next: ?*Upvalue,
+    location: *Value,
+    closed: Value,
+};
+
 pub fn equal(a: Value, b: Value) bool {
     if (a.ty() != b.ty()) return false;
 
@@ -172,8 +227,11 @@ pub fn equal(a: Value, b: Value) bool {
         .boolean => return a.boolean == b.boolean,
         .nil => return true,
         .number => return a.number == b.number,
-        .string => return a.obj == b.obj,
-        .function => return a.obj == b.obj,
-        .native => return a.obj == b.obj,
+        .string,
+        .function,
+        .native,
+        .closure,
+        .upvalue,
+        => return a.obj == b.obj,
     }
 }

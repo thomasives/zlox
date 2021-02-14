@@ -19,4 +19,5 @@ Using zig version 0.7.1.
 - [x] Chapter 22 Local Variables
 - [x] Chapter 23 Jumping Back and Forth
 - [x] Chapter 24 Calls and Functions
-- [ ] Chapter 25 Closures
+- [x] Chapter 25 Closures
+- [ ] Chapter 26 Garbage Collection

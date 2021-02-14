@@ -10,7 +10,9 @@ const Value = vl.Value;
 const Obj = vl.Obj;
 const String = vl.String;
 const Function = vl.Function;
+const Closure = vl.Closure;
 const Native = vl.Native;
+const Upvalue = vl.Upvalue;
 const Allocator = std.mem.Allocator;
 
 const compile = @import("compiler.zig").compile;
@@ -28,7 +30,7 @@ pub const InterpretError = error{
 };
 
 const CallFrame = struct {
-    function: *Function,
+    closure: *Closure,
     ip: usize,
     slots: []Value,
 };
@@ -50,8 +52,10 @@ const Vm = struct {
     stack: Stack,
     /// Global variables
     globals: Globals,
+    /// Linked list of open upvalues
+    open_upvalues: ?*Upvalue,
 
-    /// Linked list of objects
+    /// Linked list of all objects
     objects: ?*Obj,
     /// Internment camp for all the strings in the lox program
     strings: Internment,
@@ -78,8 +82,30 @@ pub fn newFunction() !*Function {
     function.arity = 0;
     function.name = null;
     function.chunk = Chunk.init(vm.allocator);
+    function.upvalue_count = undefined;
 
     return function;
+}
+
+pub fn newClosure(func: *Function) !*Closure {
+    const closure = try createObj(Closure);
+    closure.function = func;
+
+    closure.upvalues = try vm.allocator.alloc(?*Upvalue, @intCast(usize, func.upvalue_count));
+    for (closure.upvalues) |*upvalue| {
+        upvalue.* = null;
+    }
+
+    return closure;
+}
+
+pub fn newUpvalue(slot: *Value) !*Upvalue {
+    const upvalue = try createObj(Upvalue);
+    upvalue.location = slot;
+    upvalue.next = null;
+    upvalue.closed = .nil;
+
+    return upvalue;
 }
 
 pub fn createString(chars: []const u8) !*Obj {
@@ -120,7 +146,13 @@ pub fn deallocateObj(obj: *Obj) void {
             const function = obj.cast(Function).?;
             function.chunk.deinit();
         },
-        .native => {
+        .closure => {
+            const closure = obj.cast(Closure).?;
+            vm.allocator.free(closure.upvalues);
+        },
+        .native,
+        .upvalue,
+        => {
             // Nothing to do
         },
     }
@@ -130,6 +162,7 @@ pub fn init(allocator: *Allocator) !void {
     vm.allocator = allocator;
     vm.frames = .{};
     vm.stack = .{};
+    vm.open_upvalues = null;
     vm.objects = null;
     vm.strings = Vm.Internment.init(allocator);
     vm.globals = Vm.Globals.init(allocator);
@@ -156,26 +189,29 @@ pub fn interpret(source_code: []const u8) !void {
 
     const func = try compile(vm.allocator, source_code);
     vm.stack.push(Value{ .obj = &func.base });
-    try callValue(Value{ .obj = &func.base }, 0);
+    const closure = try newClosure(func);
+    _ = vm.stack.pop();
+    vm.stack.push(Value{ .obj = &closure.base });
+    try callValue(Value{ .obj = &closure.base }, 0);
 
     try run();
 }
 
 fn readByte(frame: *CallFrame) u8 {
-    const result = frame.function.chunk.code.items[frame.ip];
+    const result = frame.closure.function.chunk.code.items[frame.ip];
     frame.ip += 1;
     return result;
 }
 
 fn readShort(frame: *CallFrame) u16 {
-    var result: u16 = @as(u16, frame.function.chunk.code.items[frame.ip]) << 8;
-    result |= frame.function.chunk.code.items[frame.ip + 1];
+    var result: u16 = @as(u16, frame.closure.function.chunk.code.items[frame.ip]) << 8;
+    result |= frame.closure.function.chunk.code.items[frame.ip + 1];
     frame.ip += 2;
     return result;
 }
 
 fn readConstant(frame: *CallFrame) Value {
-    return frame.function.chunk.constants.items[readByte(frame)];
+    return frame.closure.function.chunk.constants.items[readByte(frame)];
 }
 
 fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
@@ -187,7 +223,7 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
         execute: ExecuteFn,
 
         fn makeCheck(comptime Ta: type, comptime Tb: type) CheckFn {
-            const Closure = struct {
+            const C = struct {
                 fn check(a: Value.Type, b: Value.Type) bool {
                     switch (Ta) {
                         f64 => if (a != .number) return false,
@@ -205,11 +241,11 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
                 }
             };
 
-            return Closure.check;
+            return C.check;
         }
 
         fn makeExecute(comptime op: anytype, comptime Ta: type, comptime Tb: type, comptime R: type) ExecuteFn {
-            const Closure = struct {
+            const C = struct {
                 fn execute(a: Value, b: Value) Op.Error!Value {
                     const a_inner = a.cast(Ta).?;
                     const b_inner = b.cast(Tb).?;
@@ -237,7 +273,7 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
                 }
             };
 
-            return Closure.execute;
+            return C.execute;
         }
     };
 
@@ -276,11 +312,13 @@ fn binaryOp(comptime ops: anytype, comptime op_name: []const u8) !void {
         a.ty(),
         b.ty(),
     });
+
     return InterpretError.Runtime;
 }
 
 fn callValue(callee: Value, arg_count: u8) !void {
-    if (callee.cast(*Function)) |func| {
+    if (callee.cast(*Closure)) |closure| {
+        const func = closure.function;
         if (arg_count != func.arity) {
             try runtimeError("Expected {} arguments but got {}.", .{ func.arity, arg_count });
             return InterpretError.Runtime;
@@ -292,7 +330,7 @@ fn callValue(callee: Value, arg_count: u8) !void {
         }
 
         vm.frames.push(CallFrame{
-            .function = func,
+            .closure = closure,
             .ip = 0,
             .slots = vm.stack.buffer[vm.stack.top - arg_count - 1 ..],
         });
@@ -303,6 +341,46 @@ fn callValue(callee: Value, arg_count: u8) !void {
     } else {
         try runtimeError("Can only call functions and classes.", .{});
         return InterpretError.Runtime;
+    }
+}
+
+fn captureUpvalue(local: *Value) !*Upvalue {
+    const last = @ptrToInt(local) - @ptrToInt(&vm.stack.buffer[0]);
+
+    var prev: ?*Upvalue = null;
+    var next: ?*Upvalue = vm.open_upvalues;
+
+    while (next) |upvalue| {
+        var loc = @ptrToInt(upvalue.location) - @ptrToInt(&vm.stack.buffer[0]);
+        if (loc / @sizeOf(Upvalue) <= last) break;
+        prev = next;
+        next = upvalue.next;
+    }
+
+    if (next != null and next.?.location == local) {
+        return next.?;
+    }
+
+    var new = try newUpvalue(local);
+    new.next = next;
+
+    if (prev) |upvalue| {
+        upvalue.next = new;
+    } else {
+        vm.open_upvalues = new;
+    }
+
+    return new;
+}
+
+fn closeUpvalues(last: usize) !void {
+    while (vm.open_upvalues) |upvalue| {
+        var loc = @ptrToInt(upvalue.location) - @ptrToInt(&vm.stack.buffer[0]);
+        if (loc / @sizeOf(Upvalue) < last) break;
+
+        upvalue.closed = upvalue.location.*;
+        upvalue.location = &upvalue.closed;
+        vm.open_upvalues = upvalue.next;
     }
 }
 
@@ -317,13 +395,16 @@ fn run() !void {
             const stack_values = frame.slots[0..top];
             try stdout.print("  IP = {x:0>4}", .{frame.ip});
             try debug.dumpValueStack(stdout, stack_values);
-            _ = try debug.disassembleInstruction(stdout, &frame.function.chunk, frame.ip);
+            _ = try debug.disassembleInstruction(stdout, &frame.closure.function.chunk, frame.ip, false);
         }
 
         const instruction = @intToEnum(OpCode, readByte(frame));
         switch (instruction) {
             .return_ => {
                 const result = vm.stack.pop();
+                const new_top = (@ptrToInt(frame.slots.ptr) - @ptrToInt(&vm.stack.buffer[0])) / @sizeOf(Value);
+
+                try closeUpvalues(new_top);
 
                 _ = vm.frames.pop();
                 if (vm.frames.empty()) {
@@ -331,12 +412,16 @@ fn run() !void {
                     return;
                 }
 
-                vm.stack.top = (@ptrToInt(frame.slots.ptr) - @ptrToInt(&vm.stack.buffer[0])) / @sizeOf(Value);
+                vm.stack.top = new_top;
                 vm.stack.push(result);
 
                 frame = vm.frames.peek(0);
             },
             .pop => _ = vm.stack.pop(),
+            .close_upvalue => {
+                try closeUpvalues(vm.stack.top - 1);
+                _ = vm.stack.pop();
+            },
             .print => {
                 const v = vm.stack.pop();
                 try stdout.print("{}\n", .{v});
@@ -344,6 +429,20 @@ fn run() !void {
             .constant => {
                 const v = readConstant(frame);
                 vm.stack.push(v);
+            },
+            .closure => {
+                const function = readConstant(frame).cast(*Function).?;
+                const closure = try newClosure(function);
+                vm.stack.push(Value{ .obj = &closure.base });
+                for (closure.upvalues) |*upvalue| {
+                    var is_local = readByte(frame);
+                    var index = readByte(frame);
+                    if (is_local != 0) {
+                        upvalue.* = try captureUpvalue(&frame.slots[index]);
+                    } else {
+                        upvalue.* = frame.closure.upvalues[index];
+                    }
+                }
             },
             .define_global => {
                 const name = readConstant(frame).cast(*String).?;
@@ -376,6 +475,14 @@ fn run() !void {
                     try runtimeError("Undefined variable '{}'", .{name.chars});
                     return InterpretError.Runtime;
                 }
+            },
+            .get_upvalue => {
+                var slot = readByte(frame);
+                vm.stack.push(frame.closure.upvalues[slot].?.location.*);
+            },
+            .set_upvalue => {
+                var slot = readByte(frame);
+                frame.closure.upvalues[slot].?.location.* = vm.stack.peek(0).*;
             },
             .call => {
                 const arg_count = readByte(frame);
@@ -450,7 +557,7 @@ fn runtimeError(comptime fmt: []const u8, args: anytype) !void {
     var i = @intCast(isize, vm.frames.top) - 1;
     while (i >= 0) : (i -= 1) {
         const frame = vm.frames.peek(@intCast(usize, i));
-        const func = frame.function;
+        const func = frame.closure.function;
 
         const line = func.chunk.lines.items[frame.ip];
 
@@ -459,6 +566,10 @@ fn runtimeError(comptime fmt: []const u8, args: anytype) !void {
             .{ line, if (func.name != null) func.name.?.chars else "script" },
         );
     }
+
+    vm.stack.reset();
+    vm.frames.reset();
+    vm.open_upvalues = null;
 }
 
 fn isFalsey(a: Value) bool {

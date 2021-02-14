@@ -29,14 +29,23 @@ const Compiler = struct {
     const Local = struct {
         name: Token,
         depth: i64,
+        is_captured: bool,
     };
-    const Locals = Stack(Local, std.math.maxInt(u8) + 1);
+    const Upvalue = struct {
+        index: u8,
+        is_local: bool,
+    };
+
+    const stack_max = std.math.maxInt(u8) + 1;
+    const Locals = Stack(Local, stack_max);
+    const Upvalues = Stack(Upvalue, stack_max);
 
     enclosing: ?*Compiler = null,
     function: *Function,
     ty: FunctionType,
 
     locals: Locals = .{},
+    upvalues: Upvalues = .{},
     scope_depth: i64 = 0,
 };
 
@@ -242,6 +251,16 @@ fn function(ty: Compiler.FunctionType) ParseError!void {
         const name = try vm.createString(parser.previous.span);
         compiler.function.name = name.cast(vl.String).?;
     }
+    compiler.locals.push(Compiler.Local{
+        .depth = 0,
+        .is_captured = false,
+        .name = scanner.Token{
+            .tag = undefined,
+            .span = "",
+            .line = parser.previous.line,
+        },
+    });
+
     current = &compiler;
     try beginScope();
 
@@ -266,7 +285,12 @@ fn function(ty: Compiler.FunctionType) ParseError!void {
 
     const func = try endCompiler();
     current = compiler.enclosing.?;
-    try emitOpByte(.constant, try makeConstant(Value{ .obj = &func.base }));
+    try emitOpByte(.closure, try makeConstant(Value{ .obj = &func.base }));
+
+    for (compiler.upvalues.slice()) |upvalue| {
+        try emitByte(if (upvalue.is_local) 1 else 0);
+        try emitByte(upvalue.index);
+    }
 }
 
 fn varDeclaration() ParseError!void {
@@ -319,6 +343,7 @@ fn addLocal(name: *Token) ParseError!void {
     current.locals.push(Compiler.Local{
         .name = name.*,
         .depth = -1,
+        .is_captured = false,
     });
 }
 
@@ -377,7 +402,11 @@ fn endScope() ParseError!void {
     while (!current.locals.empty() and
         current.locals.peek(0).depth > current.scope_depth)
     {
-        try emitOp(.pop);
+        if (current.locals.peek(0).is_captured) {
+            try emitOp(.close_upvalue);
+        } else {
+            try emitOp(.pop);
+        }
         _ = current.locals.pop();
     }
 }
@@ -605,10 +634,17 @@ fn variable(can_assign: bool) ParseError!void {
     var get_op: OpCode = undefined;
     var set_op: OpCode = undefined;
 
-    var arg = try resolveLocal(current, &parser.previous);
-    if (arg != null) {
+    const name = &parser.previous;
+    var arg: u8 = undefined;
+
+    if (try resolveLocal(current, name)) |local| {
+        arg = local;
         get_op = .get_local;
         set_op = .set_local;
+    } else if (try resolveUpvalue(current, name)) |upvalue| {
+        arg = upvalue;
+        get_op = .get_upvalue;
+        set_op = .set_upvalue;
     } else {
         arg = try identifierConstant(&parser.previous);
         get_op = .get_global;
@@ -617,9 +653,9 @@ fn variable(can_assign: bool) ParseError!void {
 
     if (can_assign and try match(.equal)) {
         try expression();
-        try emitOpByte(set_op, arg.?);
+        try emitOpByte(set_op, arg);
     } else {
-        try emitOpByte(get_op, arg.?);
+        try emitOpByte(get_op, arg);
     }
 }
 
@@ -627,6 +663,7 @@ fn endCompiler() !*Function {
     try emitOp(.nil);
     try emitOp(.return_);
     const func = current.function;
+    func.upvalue_count = @intCast(i32, current.upvalues.top);
 
     if (debug.print_code) {
         const writer = std.io.getStdOut().writer();
@@ -661,11 +698,43 @@ fn resolveLocal(compiler: *Compiler, name: *Token) ParseError!?u8 {
             if (local.depth == -1) {
                 try errorAtPrevious("Cannot read local variable in its own initializer.");
             }
-            return @intCast(u8, i + 1);
+            return @intCast(u8, compiler.locals.top - i - 1);
         }
     }
 
     return null;
+}
+
+fn resolveUpvalue(compiler: *Compiler, name: *Token) ParseError!?u8 {
+    if (compiler.enclosing) |enclosing| {
+        if (try resolveLocal(enclosing, name)) |local| {
+            enclosing.locals.buffer[local].is_captured = true;
+            return try addUpvalue(compiler, local, true);
+        } else if (try resolveUpvalue(enclosing, name)) |upvalue| {
+            return try addUpvalue(compiler, upvalue, false);
+        }
+    }
+    return null;
+}
+
+fn addUpvalue(compiler: *Compiler, index: u8, is_local: bool) ParseError!u8 {
+    for (compiler.upvalues.slice()) |upvalue, i| {
+        if (upvalue.index == index and upvalue.is_local == is_local) {
+            return @intCast(u8, i);
+        }
+    }
+
+    if (compiler.upvalues.full()) {
+        try errorAtPrevious("Too many closure variables in function.");
+        return 0;
+    }
+
+    compiler.upvalues.push(Compiler.Upvalue{
+        .index = index,
+        .is_local = is_local,
+    });
+
+    return @intCast(u8, compiler.upvalues.top - 1);
 }
 
 fn advance() ParseError!void {

@@ -39,13 +39,44 @@ fn jumpInstruction(writer: anytype, chunk: *const Chunk, offset: usize, sign: is
     return offset + 3;
 }
 
-pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usize) !usize {
+pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usize, detail: bool) !usize {
     const op: OpCode = @intToEnum(OpCode, chunk.code.items[offset]);
 
     switch (op) {
         .return_ => return try simpleInstruction(writer, offset, "OP_RETURN"),
         .call => return try byteInstruction(writer, chunk, offset, "OP_CALL"),
+        .closure => {
+            var result = offset + 1;
+            const constant = chunk.code.items[result];
+            result += 1;
+
+            try writer.print("{:<16} {x:0>4} '{}'\n", .{
+                "OP_CLOSURE",
+                constant,
+                chunk.constants.items[constant],
+            });
+
+            if (detail) {
+                var func = chunk.constants.items[constant].cast(*value.Function).?;
+                var i: usize = 0;
+                while (i < func.upvalue_count) : (i += 1) {
+                    var is_local = chunk.code.items[result] != 0;
+                    result += 1;
+                    var index = chunk.code.items[result];
+                    result += 1;
+                    var kind: []const u8 = if (is_local) "local" else "upvalue";
+                    try writer.print("{x:0>4}    |                   {s} {}\n", .{
+                        result - 2,
+                        kind,
+                        index,
+                    });
+                }
+            }
+
+            return result;
+        },
         .pop => return try simpleInstruction(writer, offset, "OP_POP"),
+        .close_upvalue => return try simpleInstruction(writer, offset, "OP_CLOSE_UPVALUE"),
         .constant => return try constantInstruction(writer, chunk, offset, "OP_CONSTANT"),
         .print => return try simpleInstruction(writer, offset, "OP_PRINT"),
         .negate => return try simpleInstruction(writer, offset, "OP_NEGATE"),
@@ -65,8 +96,10 @@ pub fn disassembleInstruction(writer: anytype, chunk: *const Chunk, offset: usiz
         .greater_equal => return try simpleInstruction(writer, offset, "OP_GREATER_EQUAL"),
         .define_global => return constantInstruction(writer, chunk, offset, "OP_DEFINE_GLOBAL"),
         .get_global => return constantInstruction(writer, chunk, offset, "OP_GET_GLOBAL"),
+        .get_upvalue => return try byteInstruction(writer, chunk, offset, "OP_GET_UPVALUE"),
         .get_local => return byteInstruction(writer, chunk, offset, "OP_GET_LOCAL"),
         .set_global => return constantInstruction(writer, chunk, offset, "OP_SET_GLOBAL"),
+        .set_upvalue => return try byteInstruction(writer, chunk, offset, "OP_SET_UPVALUE"),
         .set_local => return byteInstruction(writer, chunk, offset, "OP_SET_LOCAL"),
         .jump_if_false => return jumpInstruction(writer, chunk, offset, 1, "OP_JUMP_IF_FALSE"),
         .jump_if_true => return jumpInstruction(writer, chunk, offset, 1, "OP_JUMP_IF_TRUE"),
@@ -92,7 +125,7 @@ pub fn disassembleChunk(writer: anytype, chunk: *const Chunk, name: []const u8) 
             try writer.print("   |  ", .{});
         }
 
-        offset = try disassembleInstruction(writer, chunk, offset);
+        offset = try disassembleInstruction(writer, chunk, offset, true);
     }
 }
 
